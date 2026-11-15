@@ -7,6 +7,7 @@ const ROUTE_NAMES: Record<string, string> = {
   "/": "Peta prioritas",
   "/segmen": "Data segmen",
   "/pendataan": "Pendataan",
+  "/ahp": "Pembobotan AHP",
   "/pemeringkatan": "Pemeringkatan",
   "/daftar-kerja": "Daftar kerja",
   "/riwayat": "Riwayat",
