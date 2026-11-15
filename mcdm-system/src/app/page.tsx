@@ -37,7 +37,7 @@ const INITIAL_SEGMENTS: SegmentItem[] = [
     name: "Gang Caringin 01", corridor: "Caringin", priority: "Tinggi",
     color: "#1a5b3e", badgeColor: "#1a5b3e", score: 0.782,
     brokenLights: 4, totalLights: 6, crimeCount: 4, boardingCount: 19,
-    inspectionDate: "7 Nov 2026",
+    inspectionDate: "4 Nov 2026",
     coordinates: [
       [-6.9336, 107.7668],
       [-6.9342, 107.7686],
@@ -59,11 +59,11 @@ const INITIAL_SEGMENTS: SegmentItem[] = [
     markerPos: [-6.9366, 107.7758],
   },
   {
-    id: 4, rank: 4, segmentCode: "G-04",
-    name: "Gang Ciseke Lama", corridor: "Ciseke", priority: "Sedang",
+    id: 4, rank: 4, segmentCode: "G-06",
+    name: "Gang Ciseke 02", corridor: "Ciseke", priority: "Sedang",
     color: "#c97a26", badgeColor: "#c97a26", score: 0.64,
     brokenLights: 3, totalLights: 7, crimeCount: 2, boardingCount: 14,
-    inspectionDate: "6 Nov 2026",
+    inspectionDate: "2 Nov 2026",
     coordinates: [
       [-6.9372, 107.7702],
       [-6.9376, 107.7719],
@@ -72,11 +72,11 @@ const INITIAL_SEGMENTS: SegmentItem[] = [
     markerPos: [-6.9376, 107.7719],
   },
   {
-    id: 5, rank: 5, segmentCode: "G-05",
+    id: 5, rank: 5, segmentCode: "G-04",
     name: "Gang Hegarmanah 01", corridor: "Hegarmanah", priority: "Rendah",
     color: "#4b5563", badgeColor: "#4b5563", score: 0.312,
     brokenLights: 2, totalLights: 8, crimeCount: 1, boardingCount: 8,
-    inspectionDate: "5 Nov 2026",
+    inspectionDate: "29 Okt 2026",
     coordinates: [
       [-6.9295, 107.7772],
       [-6.9298, 107.7794],
@@ -85,11 +85,11 @@ const INITIAL_SEGMENTS: SegmentItem[] = [
     markerPos: [-6.9298, 107.7794],
   },
   {
-    id: 6, rank: 6, segmentCode: "G-06",
+    id: 6, rank: 6, segmentCode: "G-05",
     name: "Gang Sukawening 01", corridor: "Sukawening", priority: "Rendah",
     color: "#4b5563", badgeColor: "#4b5563", score: 0.285,
     brokenLights: 1, totalLights: 5, crimeCount: 0, boardingCount: 6,
-    inspectionDate: "4 Nov 2026",
+    inspectionDate: "27 Okt 2026",
     coordinates: [
       [-6.9332, 107.7812],
       [-6.9334, 107.7831],
@@ -98,17 +98,30 @@ const INITIAL_SEGMENTS: SegmentItem[] = [
     markerPos: [-6.9334, 107.7831],
   },
   {
-    id: 7, rank: 0, segmentCode: "G-07",
-    name: "Gang Cikuda Timur", corridor: "Hegarmanah", priority: "Perlu validasi",
-    color: "#b91c1c", badgeColor: "#b91c1c", score: 0.0,
-    brokenLights: 2, totalLights: 4, crimeCount: 0, boardingCount: 3,
-    inspectionDate: "Kadaluwarsa (>90 hari)",
+    id: 7, rank: 7, segmentCode: "G-07",
+    name: "Gang Caringin 02", corridor: "Caringin", priority: "Rendah",
+    color: "#4b5563", badgeColor: "#4b5563", score: 0.215,
+    brokenLights: 3, totalLights: 7, crimeCount: 2, boardingCount: 10,
+    inspectionDate: "23 Okt 2026",
     coordinates: [
-      [-6.9274, 107.7825],
-      [-6.9279, 107.7842],
-      [-6.9284, 107.786],
+      [-6.935, 107.768],
+      [-6.9355, 107.7695],
+      [-6.936, 107.771],
     ],
-    markerPos: [-6.9279, 107.7842],
+    markerPos: [-6.9355, 107.7695],
+  },
+  {
+    id: 8, rank: 0, segmentCode: "G-08",
+    name: "Gang Sukawening 02", corridor: "Sukawening", priority: "Perlu validasi",
+    color: "#b91c1c", badgeColor: "#b91c1c", score: 0.0,
+    brokenLights: 2, totalLights: 6, crimeCount: 1, boardingCount: 7,
+    inspectionDate: "2 Agu 2026",
+    coordinates: [
+      [-6.934, 107.782],
+      [-6.9345, 107.7838],
+      [-6.935, 107.7855],
+    ],
+    markerPos: [-6.9345, 107.7838],
   },
 ];
 

@@ -3,6 +3,7 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  color-scheme: light;
 }
 
 @theme inline {
@@ -12,15 +13,30 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+  color-scheme: light;
+}
+
+/* Pastikan semua elemen input/form selalu tajam dan kontras tinggi di semua mode OS/browser */
+input, select, textarea, option {
+  color: #18181b !important;
+  background-color: #ffffff !important;
+  color-scheme: light !important;
+}
+
+select option {
+  color: #18181b !important;
+  background-color: #ffffff !important;
+}
+
+input::placeholder, textarea::placeholder {
+  color: #a1a1aa !important;
+}
+
+input:disabled, textarea:disabled, select:disabled {
+  background-color: #f4f4f5 !important;
+  color: #52525b !important;
 }

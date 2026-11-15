@@ -19,13 +19,11 @@ export default function PendataanPage() {
 
   // Manual Form State
   const [selectedSegmentCode, setSelectedSegmentCode] = useState("");
-  const [totalLights, setTotalLights] = useState<number>(10);
-  const [brokenLights, setBrokenLights] = useState<number>(4);
-  const [crimeCount, setCrimeCount] = useState<number>(3);
-  const [boardingCount, setBoardingCount] = useState<number>(15);
-  const [inspectionDate, setInspectionDate] = useState<string>(
-    new Date().toISOString().split("T")[0]
-  );
+  const [totalLights, setTotalLights] = useState<number | "">(10);
+  const [brokenLights, setBrokenLights] = useState<number | "">(4);
+  const [crimeCount, setCrimeCount] = useState<number | "">(3);
+  const [boardingCount, setBoardingCount] = useState<number | "">(15);
+  const [inspectionDate, setInspectionDate] = useState<string>("2026-11-15");
   const [manualSubmitting, setManualSubmitting] = useState(false);
   const [manualSuccessMsg, setManualSuccessMsg] = useState<string | null>(null);
   const [manualErrorMsg, setManualErrorMsg] = useState<string | null>(null);
@@ -42,14 +40,18 @@ export default function PendataanPage() {
 
   // Row Correction Modal State
   const [editingRow, setEditingRow] = useState<CSVValidatedRow | null>(null);
-  const [editTotalLights, setEditTotalLights] = useState<number>(0);
-  const [editBrokenLights, setEditBrokenLights] = useState<number>(0);
-  const [editCrime, setEditCrime] = useState<number>(0);
-  const [editBoarding, setEditBoarding] = useState<number>(0);
-  const [editDate, setEditDate] = useState<string>("");
+  const [editTotalLights, setEditTotalLights] = useState<number | "">(0);
+  const [editBrokenLights, setEditBrokenLights] = useState<number | "">(0);
+  const [editCrime, setEditCrime] = useState<number | "">(0);
+  const [editBoarding, setEditBoarding] = useState<number | "">(0);
+  const [editDate, setEditDate] = useState<string>("2026-11-15");
   const [corrections, setCorrections] = useState<CSVRowCorrection[]>([]);
 
   useEffect(() => {
+    // Set current date safely inside client effect
+    setInspectionDate(new Date().toISOString().split("T")[0]);
+    setEditDate(new Date().toISOString().split("T")[0]);
+
     async function load() {
       const data = await fetchSegments();
       setSegments(data);
@@ -67,7 +69,12 @@ export default function PendataanPage() {
     setManualSuccessMsg(null);
     setManualWarnings([]);
 
-    if (brokenLights > totalLights) {
+    const numTotal = totalLights === "" ? 0 : Number(totalLights);
+    const numBroken = brokenLights === "" ? 0 : Number(brokenLights);
+    const numCrime = crimeCount === "" ? 0 : Number(crimeCount);
+    const numBoarding = boardingCount === "" ? 0 : Number(boardingCount);
+
+    if (numBroken > numTotal) {
       setManualErrorMsg(
         "Jumlah lampu rusak tidak boleh melebihi jumlah total lampu terpasang."
       );
@@ -78,10 +85,10 @@ export default function PendataanPage() {
     try {
       const res = await submitObservationForm({
         segment_code: selectedSegmentCode,
-        total_lights: Number(totalLights),
-        broken_lights: Number(brokenLights),
-        dawn_crime_count: Number(crimeCount),
-        boarding_house_count: Number(boardingCount),
+        total_lights: numTotal,
+        broken_lights: numBroken,
+        dawn_crime_count: numCrime,
+        boarding_house_count: numBoarding,
         inspection_date: inspectionDate,
       });
 
@@ -224,11 +231,16 @@ export default function PendataanPage() {
   function handleSaveCorrection() {
     if (!editingRow || !previewData) return;
 
+    const numTotal = editTotalLights === "" ? 0 : Number(editTotalLights);
+    const numBroken = editBrokenLights === "" ? 0 : Number(editBrokenLights);
+    const numCrime = editCrime === "" ? 0 : Number(editCrime);
+    const numBoarding = editBoarding === "" ? 0 : Number(editBoarding);
+
     const updatedRows = previewData.rows.map((r) => {
       if (r.row_number === editingRow.row_number) {
         const issues = [];
         let status: "VALID" | "WARNING" | "ERROR" = "VALID";
-        if (editBrokenLights > editTotalLights) {
+        if (numBroken > numTotal) {
           status = "ERROR";
           issues.push({
             code: "ERR_LIGHTS",
@@ -238,10 +250,10 @@ export default function PendataanPage() {
         }
         return {
           ...r,
-          total_lights: editTotalLights,
-          broken_lights: editBrokenLights,
-          dawn_crime_count: editCrime,
-          boarding_house_count: editBoarding,
+          total_lights: numTotal,
+          broken_lights: numBroken,
+          dawn_crime_count: numCrime,
+          boarding_house_count: numBoarding,
           inspection_date: editDate,
           status,
           issues,
@@ -254,10 +266,10 @@ export default function PendataanPage() {
     const corrItem: CSVRowCorrection = {
       row_number: editingRow.row_number,
       segment_code: editingRow.segment_code,
-      total_lights: editTotalLights,
-      broken_lights: editBrokenLights,
-      dawn_crime_count: editCrime,
-      boarding_house_count: editBoarding,
+      total_lights: numTotal,
+      broken_lights: numBroken,
+      dawn_crime_count: numCrime,
+      boarding_house_count: numBoarding,
       inspection_date: editDate,
     };
 
@@ -444,9 +456,13 @@ export default function PendataanPage() {
                     type="number"
                     min={1}
                     required
+                    placeholder="Contoh: 10"
                     value={totalLights}
-                    onChange={(e) => setTotalLights(parseInt(e.target.value) || 0)}
-                    className="w-full px-3.5 py-2 text-xs rounded-xl border border-zinc-200 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setTotalLights(v === "" ? "" : Number(v));
+                    }}
+                    className="w-full px-3.5 py-2 text-xs rounded-xl border border-zinc-200 bg-white text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
                   />
                   <p className="text-[11px] text-zinc-400 mt-1">Seluruh tiang lampu fisik yang ada di segmen.</p>
                 </div>
@@ -459,9 +475,13 @@ export default function PendataanPage() {
                     type="number"
                     min={0}
                     required
+                    placeholder="Contoh: 4"
                     value={brokenLights}
-                    onChange={(e) => setBrokenLights(parseInt(e.target.value) || 0)}
-                    className="w-full px-3.5 py-2 text-xs rounded-xl border border-zinc-200 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setBrokenLights(v === "" ? "" : Number(v));
+                    }}
+                    className="w-full px-3.5 py-2 text-xs rounded-xl border border-zinc-200 bg-white text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
                   />
                   <p className="text-[11px] text-zinc-400 mt-1">Lampu tidak menyala saat malam hari (≤ total lampu).</p>
                 </div>
@@ -475,9 +495,13 @@ export default function PendataanPage() {
                   <input
                     type="number"
                     min={0}
+                    placeholder="Contoh: 2"
                     value={crimeCount}
-                    onChange={(e) => setCrimeCount(parseInt(e.target.value) || 0)}
-                    className="w-full px-3.5 py-2 text-xs rounded-xl border border-zinc-200 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setCrimeCount(v === "" ? "" : Number(v));
+                    }}
+                    className="w-full px-3.5 py-2 text-xs rounded-xl border border-zinc-200 bg-white text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
                   />
                   <p className="text-[11px] text-zinc-400 mt-1">Kejadian kejahatan/curanmor antara 00.00 - 05.00 WIB.</p>
                 </div>
@@ -490,9 +514,13 @@ export default function PendataanPage() {
                     type="number"
                     min={0}
                     required
+                    placeholder="Contoh: 15"
                     value={boardingCount}
-                    onChange={(e) => setBoardingCount(parseInt(e.target.value) || 0)}
-                    className="w-full px-3.5 py-2 text-xs rounded-xl border border-zinc-200 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setBoardingCount(v === "" ? "" : Number(v));
+                    }}
+                    className="w-full px-3.5 py-2 text-xs rounded-xl border border-zinc-200 bg-white text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
                   />
                   <p className="text-[11px] text-zinc-400 mt-1">Jumlah bangunan kos aktif di sepanjang gang.</p>
                 </div>
@@ -507,7 +535,7 @@ export default function PendataanPage() {
                   required
                   value={inspectionDate}
                   onChange={(e) => setInspectionDate(e.target.value)}
-                  className="w-full px-3.5 py-2 text-xs rounded-xl border border-zinc-200 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
+                  className="w-full px-3.5 py-2 text-xs rounded-xl border border-zinc-200 bg-white text-zinc-900 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
                 />
                 <p className="text-[11px] text-zinc-400 mt-1">
                   Aturan DSS: Data inspeksi yang melebihi 90 hari akan diberi tanda peringatan dan tidak diikutsertakan pada TOPSIS.
@@ -786,9 +814,13 @@ export default function PendataanPage() {
                       <input
                         type="number"
                         min={0}
+                        placeholder="0"
                         value={editTotalLights}
-                        onChange={(e) => setEditTotalLights(parseInt(e.target.value) || 0)}
-                        className="w-full px-3 py-1.5 text-xs rounded-lg border border-zinc-200 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setEditTotalLights(v === "" ? "" : Number(v));
+                        }}
+                        className="w-full px-3 py-1.5 text-xs rounded-lg border border-zinc-200 bg-white text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
                       />
                     </div>
                     <div>
@@ -798,9 +830,13 @@ export default function PendataanPage() {
                       <input
                         type="number"
                         min={0}
+                        placeholder="0"
                         value={editBrokenLights}
-                        onChange={(e) => setEditBrokenLights(parseInt(e.target.value) || 0)}
-                        className="w-full px-3 py-1.5 text-xs rounded-lg border border-zinc-200 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setEditBrokenLights(v === "" ? "" : Number(v));
+                        }}
+                        className="w-full px-3 py-1.5 text-xs rounded-lg border border-zinc-200 bg-white text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
                       />
                     </div>
                   </div>
@@ -813,9 +849,13 @@ export default function PendataanPage() {
                       <input
                         type="number"
                         min={0}
+                        placeholder="0"
                         value={editCrime}
-                        onChange={(e) => setEditCrime(parseInt(e.target.value) || 0)}
-                        className="w-full px-3 py-1.5 text-xs rounded-lg border border-zinc-200 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setEditCrime(v === "" ? "" : Number(v));
+                        }}
+                        className="w-full px-3 py-1.5 text-xs rounded-lg border border-zinc-200 bg-white text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
                       />
                     </div>
                     <div>
@@ -825,9 +865,13 @@ export default function PendataanPage() {
                       <input
                         type="number"
                         min={0}
+                        placeholder="0"
                         value={editBoarding}
-                        onChange={(e) => setEditBoarding(parseInt(e.target.value) || 0)}
-                        className="w-full px-3 py-1.5 text-xs rounded-lg border border-zinc-200 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setEditBoarding(v === "" ? "" : Number(v));
+                        }}
+                        className="w-full px-3 py-1.5 text-xs rounded-lg border border-zinc-200 bg-white text-zinc-900 placeholder:text-zinc-400 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
                       />
                     </div>
                   </div>
@@ -840,7 +884,7 @@ export default function PendataanPage() {
                       type="date"
                       value={editDate}
                       onChange={(e) => setEditDate(e.target.value)}
-                      className="w-full px-3 py-1.5 text-xs rounded-lg border border-zinc-200 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
+                      className="w-full px-3 py-1.5 text-xs rounded-lg border border-zinc-200 bg-white text-zinc-900 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e]"
                     />
                   </div>
                 </div>
