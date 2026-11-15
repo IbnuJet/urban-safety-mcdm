@@ -24,6 +24,7 @@ def preview_ahp(
     _: User = Depends(require_roles(UserRole.PENILAI, UserRole.ADMIN)),
 ) -> AHPCalculateResponse:
     """Calculate AHP priority weights and CR without persisting to database."""
+    assert payload.pairwise_matrix is not None
     try:
         result = calculate_ahp(payload.pairwise_matrix)
     except ValueError as exc:
@@ -56,6 +57,7 @@ def create_ahp_version(
     current_user: User = Depends(require_roles(UserRole.PENILAI, UserRole.ADMIN)),
 ) -> AHPVersionResponse:
     """Calculate and store an AHP weight version; activate only if CR <= 0.10."""
+    assert payload.pairwise_matrix is not None
     try:
         result = calculate_ahp(payload.pairwise_matrix)
     except ValueError as exc:

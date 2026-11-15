@@ -17,6 +17,25 @@ from app.schemas.schemas import (
 router = APIRouter(prefix="/segments", tags=["Alley Segments"])
 
 
+def _to_segment_response(seg: AlleySegment) -> SegmentResponse:
+    return SegmentResponse(
+        id=seg.id,
+        segment_code=seg.segment_code,
+        name=seg.name,
+        corridor=seg.corridor,
+        geojson_geometry=seg.geojson_geometry,
+        is_active=seg.is_active,
+        updated_at=seg.updated_at,
+        has_geometry=bool(
+            isinstance(seg.geojson_geometry, dict)
+            and seg.geojson_geometry.get("coordinates")
+        ),
+        last_inspection_date=(
+            seg.observation.inspection_date if seg.observation is not None else None
+        ),
+    )
+
+
 @router.get("", response_model=list[SegmentResponse])
 def list_segments(
     corridor: CorridorEnum | None = Query(default=None),
@@ -26,7 +45,7 @@ def list_segments(
     _: User = Depends(get_current_user),
 ) -> list[SegmentResponse]:
     """List alley segments with optional corridor, status, and keyword filters."""
-    stmt = select(AlleySegment)
+    stmt = select(AlleySegment).options(selectinload(AlleySegment.observation))
     if corridor is not None:
         stmt = stmt.where(AlleySegment.corridor == corridor)
     if is_active is not None:
@@ -41,7 +60,7 @@ def list_segments(
         )
     stmt = stmt.order_by(AlleySegment.segment_code.asc())
     segments = db.scalars(stmt).all()
-    return [SegmentResponse.model_validate(seg) for seg in segments]
+    return [_to_segment_response(seg) for seg in segments]
 
 
 @router.get("/{segment_id}", response_model=SegmentDetailResponse)
@@ -62,7 +81,11 @@ def get_segment_detail(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Segmen gang dengan ID {segment_id} tidak ditemukan.",
         )
-    return SegmentDetailResponse.model_validate(segment)
+    base = _to_segment_response(segment)
+    return SegmentDetailResponse(
+        **base.model_dump(),
+        observation=segment.observation,
+    )
 
 
 @router.post("", response_model=SegmentResponse, status_code=status.HTTP_201_CREATED)
@@ -90,8 +113,13 @@ def create_segment(
     )
     db.add(segment)
     db.commit()
-    db.refresh(segment)
-    return SegmentResponse.model_validate(segment)
+    created = db.scalar(
+        select(AlleySegment)
+        .options(selectinload(AlleySegment.observation))
+        .where(AlleySegment.id == segment.id)
+    )
+    assert created is not None
+    return _to_segment_response(created)
 
 
 @router.put("/{segment_id}", response_model=SegmentResponse)
@@ -102,7 +130,11 @@ def update_segment(
     _: User = Depends(require_roles(UserRole.OPERATOR, UserRole.ADMIN)),
 ) -> SegmentResponse:
     """Update alley segment metadata or GeoJSON geometry."""
-    segment = db.get(AlleySegment, segment_id)
+    segment = db.scalar(
+        select(AlleySegment)
+        .options(selectinload(AlleySegment.observation))
+        .where(AlleySegment.id == segment_id)
+    )
     if segment is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -120,4 +152,4 @@ def update_segment(
 
     db.commit()
     db.refresh(segment)
-    return SegmentResponse.model_validate(segment)
+    return _to_segment_response(segment)

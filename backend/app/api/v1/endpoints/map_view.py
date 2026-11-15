@@ -17,6 +17,7 @@ from app.schemas.schemas import (
     GeoJSONFeature,
     GeoJSONFeatureCollection,
     MapSegmentDetailResponse,
+    MapSummaryMetrics,
 )
 from app.services.topsis_engine import get_priority_category
 
@@ -30,7 +31,8 @@ def _resolve_cycle(db: Session, cycle_id: int | None) -> EvaluationCycle | None:
             .options(
                 selectinload(EvaluationCycle.ranking_results).selectinload(
                     CycleRankingResult.segment
-                )
+                ),
+                selectinload(EvaluationCycle.worklist_decision),
             )
             .where(EvaluationCycle.id == cycle_id)
         )
@@ -46,7 +48,8 @@ def _resolve_cycle(db: Session, cycle_id: int | None) -> EvaluationCycle | None:
         .options(
             selectinload(EvaluationCycle.ranking_results).selectinload(
                 CycleRankingResult.segment
-            )
+            ),
+            selectinload(EvaluationCycle.worklist_decision),
         )
         .order_by(EvaluationCycle.created_at.desc(), EvaluationCycle.id.desc())
         .limit(1)
@@ -67,6 +70,13 @@ def get_priority_map_layer(
             type="FeatureCollection",
             cycle_id=None,
             cycle_name=None,
+            summary=MapSummaryMetrics(
+                total_segments=0,
+                total_broken_lights=0,
+                eligible_count=0,
+                ineligible_count=0,
+                capacity_quota=None,
+            ),
             features=[],
         )
 
@@ -112,10 +122,26 @@ def get_priority_map_layer(
             )
         )
 
+    total_broken_lights = sum(
+        int((r.snapshot_data or {}).get("broken_lights") or 0) for r in results
+    )
+    eligible_count = sum(1 for r in results if r.is_eligible)
+    ineligible_count = len(results) - eligible_count
+    capacity_quota = (
+        cycle.worklist_decision.capacity_quota if cycle.worklist_decision else None
+    )
+
     return GeoJSONFeatureCollection(
         type="FeatureCollection",
         cycle_id=cycle.id,
         cycle_name=cycle.cycle_name,
+        summary=MapSummaryMetrics(
+            total_segments=len(results),
+            total_broken_lights=total_broken_lights,
+            eligible_count=eligible_count,
+            ineligible_count=ineligible_count,
+            capacity_quota=capacity_quota,
+        ),
         features=features,
     )
 

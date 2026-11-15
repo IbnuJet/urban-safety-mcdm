@@ -56,8 +56,15 @@ class GeoJSONGeometry(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    username: str = Field(..., min_length=1, max_length=50)
+    username: str | None = Field(default=None, min_length=1, max_length=255)
+    email: EmailStr | None = None
     password: str = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def require_username_or_email(self) -> "LoginRequest":
+        if not (self.username and self.username.strip()) and not self.email:
+            raise ValueError("Harap isi username atau email untuk login.")
+        return self
 
 
 class UserResponse(BaseModel):
@@ -91,6 +98,7 @@ class UserUpdateRequest(BaseModel):
     full_name: str | None = Field(default=None, min_length=2, max_length=150)
     role: UserRole | None = None
     is_active: bool | None = None
+    password: str | None = Field(default=None, min_length=6, max_length=128)
 
 
 # ---------------------------------------------------------------------------
@@ -143,10 +151,30 @@ class SegmentResponse(BaseModel):
     geojson_geometry: dict[str, Any]
     is_active: bool
     updated_at: datetime
+    has_geometry: bool = True
+    last_inspection_date: date | None = None
 
 
 class SegmentDetailResponse(SegmentResponse):
     observation: ObservationBriefResponse | None = None
+
+
+class ObservationValidationAlertItem(BaseModel):
+    segment_id: int
+    segment_code: str
+    segment_name: str
+    corridor: CorridorEnum
+    inspection_date: date | None = None
+    reason_code: str
+    message: str
+
+
+class ObservationValidationSummaryResponse(BaseModel):
+    total_segments: int
+    complete_and_fresh_count: int
+    expired_segments: list[ObservationValidationAlertItem]
+    incomplete_segments: list[ObservationValidationAlertItem]
+    missing_observation_segments: list[ObservationValidationAlertItem]
 
 
 # ---------------------------------------------------------------------------
@@ -244,18 +272,55 @@ class CSVConfirmResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class AHPSaatyComparisons(BaseModel):
+    """Perbandingan berpasangan skala Saaty (1-9 atau resiprokal) untuk 3 kriteria."""
+
+    c1_vs_c2: float = Field(
+        ..., gt=0, description="Proporsi lampu mati (C1) dibanding Curanmor dini hari (C2)"
+    )
+    c1_vs_c3: float = Field(
+        ..., gt=0, description="Proporsi lampu mati (C1) dibanding Indekos dilayani (C3)"
+    )
+    c2_vs_c3: float = Field(
+        ..., gt=0, description="Curanmor dini hari (C2) dibanding Indekos dilayani (C3)"
+    )
+
+    def to_matrix(self) -> list[list[float]]:
+        return [
+            [1.0, float(self.c1_vs_c2), float(self.c1_vs_c3)],
+            [1.0 / float(self.c1_vs_c2), 1.0, float(self.c2_vs_c3)],
+            [1.0 / float(self.c1_vs_c3), 1.0 / float(self.c2_vs_c3), 1.0],
+        ]
+
+
 class AHPCalculateRequest(BaseModel):
-    pairwise_matrix: list[list[float]] = Field(
-        ...,
+    pairwise_matrix: list[list[float]] | None = Field(
+        default=None,
         description="Matriks perbandingan berpasangan 3x3 untuk [C1: Kerusakan Lampu, C2: Curanmor Dini Hari, C3: Kepadatan Indekos].",
+    )
+    saaty_comparisons: AHPSaatyComparisons | None = Field(
+        default=None,
+        description="Alternatif input 3 perbandingan skala Saaty dari UI slider/dropdown.",
     )
 
     @field_validator("pairwise_matrix")
     @classmethod
-    def validate_matrix_shape(cls, matrix: list[list[float]]) -> list[list[float]]:
-        if len(matrix) != 3 or any(len(row) != 3 for row in matrix):
+    def validate_matrix_shape(
+        cls, matrix: list[list[float]] | None
+    ) -> list[list[float]] | None:
+        if matrix is not None and (len(matrix) != 3 or any(len(row) != 3 for row in matrix)):
             raise ValueError("pairwise_matrix wajib berukuran 3x3.")
         return matrix
+
+    @model_validator(mode="after")
+    def resolve_matrix(self) -> "AHPCalculateRequest":
+        if self.pairwise_matrix is None and self.saaty_comparisons is None:
+            raise ValueError(
+                "Harap sertakan pairwise_matrix (3x3) atau saaty_comparisons."
+            )
+        if self.pairwise_matrix is None and self.saaty_comparisons is not None:
+            self.pairwise_matrix = self.saaty_comparisons.to_matrix()
+        return self
 
 
 class AHPCalculateResponse(BaseModel):
@@ -350,6 +415,14 @@ class TOPSISCycleDetailResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class MapSummaryMetrics(BaseModel):
+    total_segments: int
+    total_broken_lights: int
+    eligible_count: int
+    ineligible_count: int
+    capacity_quota: int | None = None
+
+
 class GeoJSONFeature(BaseModel):
     type: Literal["Feature"] = "Feature"
     geometry: dict[str, Any]
@@ -360,6 +433,7 @@ class GeoJSONFeatureCollection(BaseModel):
     type: Literal["FeatureCollection"] = "FeatureCollection"
     cycle_id: int | None = None
     cycle_name: str | None = None
+    summary: MapSummaryMetrics | None = None
     features: list[GeoJSONFeature]
 
 
@@ -475,3 +549,32 @@ class CycleHistorySummaryResponse(BaseModel):
     is_overridden: bool | None = None
     capacity_quota: int | None = None
     finalized_at: datetime | None = None
+
+
+class WorklistSelectedSegmentDetail(BaseModel):
+    order_number: int
+    segment_id: int
+    segment_code: str
+    segment_name: str
+    corridor: CorridorEnum
+    rank: int
+    preference_score: float
+    total_lights: int
+    broken_lights: int
+    dawn_crime_count: int
+    boarding_house_count: int
+    choice_status: Literal["USULAN_SISTEM", "PILIHAN_OVERRIDE"]
+
+
+class WorklistDetailResponse(BaseModel):
+    decision: WorklistDecisionResponse
+    decided_by_name: str
+    selected_segments: list[WorklistSelectedSegmentDetail]
+    replaced_proposed_segments: list[WorklistCandidateItem]
+
+
+class CycleHistoryDetailResponse(BaseModel):
+    summary: CycleHistorySummaryResponse
+    worklist: WorklistDetailResponse | None = None
+    eligible_results: list[CycleRankingItemResponse]
+    ineligible_results: list[CycleRankingItemResponse]

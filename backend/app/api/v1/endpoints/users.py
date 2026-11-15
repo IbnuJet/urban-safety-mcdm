@@ -81,6 +81,8 @@ def update_user(
         user.role = payload.role
     if payload.is_active is not None:
         user.is_active = payload.is_active
+    if payload.password is not None:
+        user.hashed_password = hash_password(payload.password)
 
     db.commit()
     db.refresh(user)

@@ -254,6 +254,30 @@ def run_topsis_cycle(
     return _build_cycle_response(loaded_cycle)
 
 
+@router.get("/cycles/latest", response_model=TOPSISCycleDetailResponse)
+def get_latest_topsis_cycle(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> TOPSISCycleDetailResponse:
+    """Retrieve the latest TOPSIS evaluation cycle ranking results."""
+    cycle = db.scalar(
+        select(EvaluationCycle)
+        .options(
+            selectinload(EvaluationCycle.ranking_results).selectinload(
+                CycleRankingResult.segment
+            )
+        )
+        .order_by(EvaluationCycle.created_at.desc(), EvaluationCycle.id.desc())
+        .limit(1)
+    )
+    if cycle is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Belum ada siklus evaluasi TOPSIS yang pernah dijalankan.",
+        )
+    return _build_cycle_response(cycle)
+
+
 @router.get("/cycles/{cycle_id}", response_model=TOPSISCycleDetailResponse)
 def get_topsis_cycle_detail(
     cycle_id: int,

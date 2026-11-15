@@ -9,9 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_current_user
+from app.api.v1.endpoints.topsis import _build_cycle_response
+from app.api.v1.endpoints.worklists import build_worklist_detail
 from app.core.database import get_db
 from app.models.models import CycleRankingResult, EvaluationCycle, User
-from app.schemas.schemas import CycleHistorySummaryResponse
+from app.schemas.schemas import (
+    CycleHistoryDetailResponse,
+    CycleHistorySummaryResponse,
+)
 
 router = APIRouter(prefix="/history", tags=["History & Export"])
 
@@ -58,6 +63,59 @@ def list_cycle_history(
             )
         )
     return summaries
+
+
+@router.get("/cycles/{cycle_id}", response_model=CycleHistoryDetailResponse)
+def get_cycle_history_detail(
+    cycle_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> CycleHistoryDetailResponse:
+    """Retrieve full audit detail for one evaluation cycle including rankings and worklist."""
+    cycle = db.scalar(
+        select(EvaluationCycle)
+        .options(
+            selectinload(EvaluationCycle.executor),
+            selectinload(EvaluationCycle.ahp_version),
+            selectinload(EvaluationCycle.ranking_results).selectinload(
+                CycleRankingResult.segment
+            ),
+            selectinload(EvaluationCycle.worklist_decision),
+        )
+        .where(EvaluationCycle.id == cycle_id)
+    )
+    if cycle is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Siklus evaluasi dengan ID {cycle_id} tidak ditemukan.",
+        )
+
+    cycle_detail = _build_cycle_response(cycle)
+    wd = cycle.worklist_decision
+    summary = CycleHistorySummaryResponse(
+        cycle_id=cycle.id,
+        cycle_name=cycle.cycle_name,
+        created_at=cycle.created_at,
+        executed_by=cycle.executed_by,
+        executed_by_username=cycle.executor.username,
+        ahp_version_id=cycle.ahp_version_id,
+        ahp_version_name=cycle.ahp_version.version_name,
+        weights_snapshot=cycle.weights_snapshot,
+        status=cycle.status,
+        total_segments=len(cycle.ranking_results),
+        eligible_count=cycle_detail.eligible_count,
+        ineligible_count=cycle_detail.ineligible_count,
+        is_overridden=wd.is_overridden if wd else None,
+        capacity_quota=wd.capacity_quota if wd else None,
+        finalized_at=wd.finalized_at if wd else None,
+    )
+    worklist = build_worklist_detail(db, cycle) if wd is not None else None
+    return CycleHistoryDetailResponse(
+        summary=summary,
+        worklist=worklist,
+        eligible_results=cycle_detail.eligible_results,
+        ineligible_results=cycle_detail.ineligible_results,
+    )
 
 
 @router.get("/cycles/{cycle_id}/export-csv")

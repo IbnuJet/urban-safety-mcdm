@@ -1,7 +1,7 @@
 """Modul 1: Authentication endpoints (login & current user profile)."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -15,13 +15,20 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
-    """Authenticate user by username and password and issue JWT access token."""
-    stmt = select(User).where(User.username == payload.username.strip())
+    """Authenticate user by username or email and password and issue JWT access token."""
+    if payload.email is not None:
+        identifier = str(payload.email).strip().lower()
+        stmt = select(User).where(User.email == identifier)
+    else:
+        identifier = (payload.username or "").strip()
+        stmt = select(User).where(
+            or_(User.username == identifier, User.email == identifier.lower())
+        )
     user = db.scalar(stmt)
     if user is None or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Username atau password salah.",
+            detail="Username/email atau password salah.",
         )
     if not user.is_active:
         raise HTTPException(

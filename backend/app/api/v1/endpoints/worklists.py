@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import require_roles
+from app.api.deps import get_current_user, require_roles
 from app.core.database import get_db
 from app.models.models import (
     CycleRankingResult,
@@ -17,9 +17,11 @@ from app.models.models import (
 from app.schemas.schemas import (
     WorklistCandidateItem,
     WorklistDecisionResponse,
+    WorklistDetailResponse,
     WorklistFinalizeRequest,
     WorklistProposeRequest,
     WorklistProposeResponse,
+    WorklistSelectedSegmentDetail,
 )
 
 router = APIRouter(prefix="/worklists", tags=["Worklists & Override Audit"])
@@ -163,3 +165,73 @@ def finalize_worklist(
     db.commit()
     db.refresh(decision)
     return WorklistDecisionResponse.model_validate(decision)
+
+
+def build_worklist_detail(
+    db: Session, cycle: EvaluationCycle
+) -> WorklistDetailResponse:
+    """Build detailed finalized worklist comparison including replaced system proposals."""
+    decision = cycle.worklist_decision
+    if decision is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Daftar kerja final untuk siklus {cycle.id} belum ditetapkan.",
+        )
+
+    decider = db.get(User, decision.decided_by)
+    decided_by_name = decider.full_name if decider else str(decision.decided_by)
+
+    results_by_seg = {r.segment_id: r for r in cycle.ranking_results}
+    proposed_set = set(decision.system_proposed_segment_ids)
+    selected_set = set(decision.final_selected_segment_ids)
+
+    selected_segments: list[WorklistSelectedSegmentDetail] = []
+    for idx, seg_id in enumerate(decision.final_selected_segment_ids, start=1):
+        row = results_by_seg.get(seg_id)
+        if row is None:
+            continue
+        snap = row.snapshot_data or {}
+        selected_segments.append(
+            WorklistSelectedSegmentDetail(
+                order_number=idx,
+                segment_id=row.segment_id,
+                segment_code=row.segment.segment_code,
+                segment_name=row.segment.name,
+                corridor=row.segment.corridor,
+                rank=int(row.rank or 0),
+                preference_score=float(row.preference_score or 0.0),
+                total_lights=int(snap.get("total_lights", 0)),
+                broken_lights=int(snap.get("broken_lights", 0)),
+                dawn_crime_count=int(snap.get("dawn_crime_count", 0)),
+                boarding_house_count=int(snap.get("boarding_house_count", 0)),
+                choice_status=(
+                    "USULAN_SISTEM" if seg_id in proposed_set else "PILIHAN_OVERRIDE"
+                ),
+            )
+        )
+
+    replaced_proposed_segments: list[WorklistCandidateItem] = []
+    for seg_id in decision.system_proposed_segment_ids:
+        if seg_id in selected_set:
+            continue
+        row = results_by_seg.get(seg_id)
+        if row is not None:
+            replaced_proposed_segments.append(_to_candidate_item(row))
+
+    return WorklistDetailResponse(
+        decision=WorklistDecisionResponse.model_validate(decision),
+        decided_by_name=decided_by_name,
+        selected_segments=selected_segments,
+        replaced_proposed_segments=replaced_proposed_segments,
+    )
+
+
+@router.get("/cycles/{cycle_id}", response_model=WorklistDetailResponse)
+def get_cycle_worklist_detail(
+    cycle_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> WorklistDetailResponse:
+    """Retrieve finalized worklist decision and override comparison for a cycle."""
+    cycle = _get_cycle_with_results(db, cycle_id)
+    return build_worklist_detail(db, cycle)

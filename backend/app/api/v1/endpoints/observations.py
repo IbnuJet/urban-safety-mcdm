@@ -1,13 +1,16 @@
 """Modul 3: Field observation entry and two-step CSV staging/validation endpoints."""
 
 from datetime import date
+import csv
+import io
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import require_roles
+from app.api.deps import get_current_user, require_roles
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.models import (
@@ -27,6 +30,8 @@ from app.schemas.schemas import (
     ObservationBriefResponse,
     ObservationFormRequest,
     ObservationFormResponse,
+    ObservationValidationAlertItem,
+    ObservationValidationSummaryResponse,
 )
 from app.services.csv_validator import validate_csv_observations
 
@@ -309,3 +314,155 @@ def confirm_csv_batch(
         skipped_error_count=skipped_error_count,
         committed_segment_codes=committed_codes,
     )
+
+
+@router.get("/validation-summary", response_model=ObservationValidationSummaryResponse)
+def get_observation_validation_summary(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> ObservationValidationSummaryResponse:
+    """Return data completeness & freshness summary across all active alley segments."""
+    segments = db.scalars(
+        select(AlleySegment)
+        .options(selectinload(AlleySegment.observation))
+        .where(AlleySegment.is_active.is_(True))
+        .order_by(AlleySegment.segment_code.asc())
+    ).all()
+
+    today = date.today()
+    expired_items: list[ObservationValidationAlertItem] = []
+    incomplete_items: list[ObservationValidationAlertItem] = []
+    missing_items: list[ObservationValidationAlertItem] = []
+    complete_and_fresh = 0
+
+    for seg in segments:
+        obs = seg.observation
+        if obs is None:
+            missing_items.append(
+                ObservationValidationAlertItem(
+                    segment_id=seg.id,
+                    segment_code=seg.segment_code,
+                    segment_name=seg.name,
+                    corridor=seg.corridor,
+                    inspection_date=None,
+                    reason_code="MISSING_OBSERVATION",
+                    message="Belum memiliki data observasi lapangan.",
+                )
+            )
+            continue
+
+        has_issue = False
+        age_days = (today - obs.inspection_date).days
+        if age_days > settings.INSPECTION_EXPIRY_DAYS:
+            has_issue = True
+            expired_items.append(
+                ObservationValidationAlertItem(
+                    segment_id=seg.id,
+                    segment_code=seg.segment_code,
+                    segment_name=seg.name,
+                    corridor=seg.corridor,
+                    inspection_date=obs.inspection_date,
+                    reason_code="EXPIRED_INSPECTION_DATE",
+                    message=f"Inspeksi terakhir {age_days} hari yang lalu (batas {settings.INSPECTION_EXPIRY_DAYS} hari).",
+                )
+            )
+        if obs.dawn_crime_count is None:
+            has_issue = True
+            incomplete_items.append(
+                ObservationValidationAlertItem(
+                    segment_id=seg.id,
+                    segment_code=seg.segment_code,
+                    segment_name=seg.name,
+                    corridor=seg.corridor,
+                    inspection_date=obs.inspection_date,
+                    reason_code="INCOMPLETE_CRIME_DATA",
+                    message="Rekap curanmor dini hari belum lengkap.",
+                )
+            )
+        if not has_issue:
+            complete_and_fresh += 1
+
+    return ObservationValidationSummaryResponse(
+        total_segments=len(segments),
+        complete_and_fresh_count=complete_and_fresh,
+        expired_segments=expired_items,
+        incomplete_segments=incomplete_items,
+        missing_observation_segments=missing_items,
+    )
+
+
+@router.get("/csv-template")
+def download_csv_template(
+    _: User = Depends(get_current_user),
+) -> StreamingResponse:
+    """Download a CSV template with required observation import columns."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "segment_code",
+            "total_lights",
+            "broken_lights",
+            "dawn_crime_count",
+            "boarding_house_count",
+            "inspection_date",
+        ]
+    )
+    writer.writerow(["GG-CSK-001", 12, 6, 5, 18, date.today().isoformat()])
+    buffer.seek(0)
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="template_observasi_jatinangor.csv"'
+        },
+    )
+
+
+@router.get("/batches/{batch_id}", response_model=CSVUploadPreviewResponse)
+def get_csv_batch_preview(
+    batch_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.OPERATOR, UserRole.ADMIN)),
+) -> CSVUploadPreviewResponse:
+    """Retrieve stored CSV staging batch preview details."""
+    batch = db.get(CSVImportBatch, batch_id)
+    if batch is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Batch impor CSV '{batch_id}' tidak ditemukan.",
+        )
+    rows = batch.rows_payload or []
+    return CSVUploadPreviewResponse(
+        batch_id=batch.id,
+        filename=batch.filename,
+        status=batch.status,
+        total_rows=len(rows),
+        valid_rows=sum(1 for r in rows if r.get("status") == "VALID"),
+        warning_rows=sum(1 for r in rows if r.get("status") == "WARNING"),
+        error_rows=sum(1 for r in rows if r.get("status") == "ERROR"),
+        rows=[CSVValidatedRow.model_validate(r) for r in rows],
+        created_at=batch.created_at,
+    )
+
+
+@router.delete("/batches/{batch_id}", status_code=status.HTTP_204_NO_CONTENT)
+def cancel_csv_batch(
+    batch_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.OPERATOR, UserRole.ADMIN)),
+) -> None:
+    """Cancel a pending CSV staging batch (e.g. when replacing the uploaded file)."""
+    batch = db.get(CSVImportBatch, batch_id)
+    if batch is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Batch impor CSV '{batch_id}' tidak ditemukan.",
+        )
+    if batch.status == BatchStatus.CONFIRMED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Batch yang sudah dikonfirmasi tidak dapat dibatalkan.",
+        )
+    batch.status = BatchStatus.CANCELLED
+    db.commit()

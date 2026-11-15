@@ -444,3 +444,146 @@ def test_csv_upload_confirm_and_admin_rbac(client: TestClient):
     assert confirmed["committed_count"] == 4
     assert confirmed["skipped_error_count"] == 4
 
+
+def test_figma_aligned_endpoints_and_workflows(client: TestClient):
+    # 1. Email login (Screen 00) & Password reset (Screen 08b)
+    email_login = client.post(
+        "/api/v1/auth/login",
+        json={"email": "admin@jatinangor-dss.id", "password": "admin123"},
+    )
+    assert email_login.status_code == 200, email_login.text
+    admin_headers = {"Authorization": f"Bearer {email_login.json()['access_token']}"}
+
+    users = client.get("/api/v1/users", headers=admin_headers).json()
+    op_user = next(u for u in users if u["username"] == "operator")
+    reset_resp = client.patch(
+        f"/api/v1/users/{op_user['id']}",
+        headers=admin_headers,
+        json={"password": "operator_new123"},
+    )
+    assert reset_resp.status_code == 200, reset_resp.text
+    op_headers = _login(client, "operator@jatinangor-dss.id", "operator_new123")
+
+    # 2. Segments list includes has_geometry and last_inspection_date (Screen 02)
+    seg_resp = client.get("/api/v1/segments", headers=op_headers)
+    assert seg_resp.status_code == 200
+    segments = seg_resp.json()
+    assert len(segments) == 12
+    assert all(s["has_geometry"] is True for s in segments)
+    assert all(s["last_inspection_date"] is not None for s in segments)
+
+    # 3. Observations validation-summary, csv-template, GET batch & DELETE batch (Screens 03/03b/03c)
+    val_resp = client.get("/api/v1/observations/validation-summary", headers=op_headers)
+    assert val_resp.status_code == 200
+    val_data = val_resp.json()
+    assert val_data["total_segments"] == 12
+    assert val_data["complete_and_fresh_count"] >= 10
+
+    tpl_resp = client.get("/api/v1/observations/csv-template", headers=op_headers)
+    assert tpl_resp.status_code == 200
+    assert "segment_code,total_lights,broken_lights" in tpl_resp.text
+
+    sample_path = (
+        Path(__file__).resolve().parents[1]
+        / "sample_data"
+        / "sample_jatinangor_import.csv"
+    )
+    with sample_path.open("rb") as f:
+        up_resp = client.post(
+            "/api/v1/observations/upload-csv",
+            headers=op_headers,
+            files={"file": ("sample_jatinangor_import.csv", f, "text/csv")},
+        )
+    assert up_resp.status_code == 201
+    batch_id = up_resp.json()["batch_id"]
+
+    get_batch = client.get(f"/api/v1/observations/batches/{batch_id}", headers=op_headers)
+    assert get_batch.status_code == 200
+    assert get_batch.json()["batch_id"] == batch_id
+
+    del_batch = client.delete(
+        f"/api/v1/observations/batches/{batch_id}", headers=op_headers
+    )
+    assert del_batch.status_code == 204
+    cancelled_batch = client.get(
+        f"/api/v1/observations/batches/{batch_id}", headers=op_headers
+    )
+    assert cancelled_batch.status_code == 200
+    assert cancelled_batch.json()["status"] == "CANCELLED"
+    assert (
+        client.post(
+            f"/api/v1/observations/batches/{batch_id}/confirm",
+            headers=op_headers,
+            json={"include_warnings": True, "corrections": []},
+        ).status_code
+        == 400
+    )
+
+    # 4. AHP calculate-preview via saaty_comparisons (Screen 04)
+    penilai_headers = _login(client, "penilai", "penilai123")
+    ahp_preview = client.post(
+        "/api/v1/ahp/calculate-preview",
+        headers=penilai_headers,
+        json={"saaty_comparisons": {"c1_vs_c2": 3, "c1_vs_c3": 5, "c2_vs_c3": 2}},
+    )
+    assert ahp_preview.status_code == 200, ahp_preview.text
+    assert ahp_preview.json()["is_consistent"] is True
+
+    # 5. TOPSIS latest, Map summary, Worklist detail, and History detail (Screens 01, 05, 07b, 07c)
+    pju_headers = _login(client, "pju_lead", "pju123")
+    c_resp = client.post(
+        "/api/v1/topsis/cycles",
+        headers=pju_headers,
+        json={"cycle_name": "Siklus Uji Figma Alignment"},
+    )
+    assert c_resp.status_code == 201
+    cycle_id = c_resp.json()["cycle_id"]
+
+    latest_resp = client.get("/api/v1/topsis/cycles/latest", headers=pju_headers)
+    assert latest_resp.status_code == 200
+    assert latest_resp.json()["cycle_id"] == cycle_id
+
+    propose_data = client.post(
+        f"/api/v1/worklists/cycles/{cycle_id}/propose",
+        headers=pju_headers,
+        json={"capacity_quota": 2},
+    ).json()
+    proposed_ids = [x["segment_id"] for x in propose_data["system_proposed"]]
+    reserve_id = propose_data["reserve_candidates"][0]["segment_id"]
+
+    fin_resp = client.post(
+        f"/api/v1/worklists/cycles/{cycle_id}/finalize",
+        headers=pju_headers,
+        json={
+            "capacity_quota": 2,
+            "final_selected_segment_ids": [proposed_ids[0], reserve_id],
+            "override_reason": "Prioritas akses kos mahasiswa yang sedang padam total.",
+        },
+    )
+    assert fin_resp.status_code == 201
+
+    map_resp = client.get(
+        f"/api/v1/map/priority-layer?cycle_id={cycle_id}", headers=pju_headers
+    )
+    assert map_resp.status_code == 200
+    summary = map_resp.json()["summary"]
+    assert summary["total_segments"] == 12
+    assert summary["capacity_quota"] == 2
+    assert summary["eligible_count"] == 11
+    assert summary["ineligible_count"] == 1
+
+    wl_detail = client.get(f"/api/v1/worklists/cycles/{cycle_id}", headers=pju_headers)
+    assert wl_detail.status_code == 200
+    wl_json = wl_detail.json()
+    assert wl_json["decision"]["is_overridden"] is True
+    assert len(wl_json["selected_segments"]) == 2
+    assert len(wl_json["replaced_proposed_segments"]) == 1
+
+    hist_detail = client.get(f"/api/v1/history/cycles/{cycle_id}", headers=pju_headers)
+    assert hist_detail.status_code == 200
+    hist_json = hist_detail.json()
+    assert hist_json["summary"]["cycle_id"] == cycle_id
+    assert hist_json["worklist"] is not None
+    assert len(hist_json["eligible_results"]) == 11
+
+
