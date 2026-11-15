@@ -1,7 +1,9 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { SegmentItem } from "@/src/components/PriorityMap";
+import { getSegmentsData, MapSummaryMetrics } from "@/src/lib/api";
 
 const PriorityMap = dynamic(() => import("@/src/components/PriorityMap"), {
   ssr: false,
@@ -126,59 +128,107 @@ const INITIAL_SEGMENTS: SegmentItem[] = [
 ];
 
 export default function HomePage() {
+  const [segments, setSegments] = useState<SegmentItem[]>(INITIAL_SEGMENTS);
+  const [summary, setSummary] = useState<MapSummaryMetrics | null>(null);
+  const [cycleName, setCycleName] = useState<string | null>(null);
   const [selectedSegmentId, setSelectedSegmentId] = useState<number>(1);
   const [selectedCorridor, setSelectedCorridor] = useState<string>("Semua koridor");
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+
+  useEffect(() => {
+    async function loadData() {
+      setIsLoading(true);
+      try {
+        const res = await getSegmentsData(
+          selectedCorridor !== "Semua koridor" ? selectedCorridor : undefined,
+          INITIAL_SEGMENTS
+        );
+        if (res.segments && res.segments.length > 0) {
+          setSegments(res.segments);
+          if (res.summary) {
+            setSummary(res.summary);
+          }
+          if (res.cycleName) {
+            setCycleName(res.cycleName);
+          }
+          setSelectedSegmentId((prev) => {
+            const exists = res.segments.some((s) => s.id === prev);
+            return exists ? prev : res.segments[0].id;
+          });
+        }
+      } catch (err) {
+        console.error("Gagal memuat data segmen:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    loadData();
+  }, [selectedCorridor]);
 
   function handleCorridorChange(corridor: string) {
     setSelectedCorridor(corridor);
-
-    if (corridor === "Semua koridor") {
-      setSelectedSegmentId(INITIAL_SEGMENTS[0].id);
-    } else {
-      const matched = INITIAL_SEGMENTS.find(
-        (s) => s.corridor.toLowerCase() === corridor.toLowerCase()
-      );
-      if (matched) {
-        setSelectedSegmentId(matched.id);
-      }
-    }
   }
 
   const selectedSegment =
-    INITIAL_SEGMENTS.find((s) => s.id === selectedSegmentId) ||
+    segments.find((s) => s.id === selectedSegmentId) ||
+    segments[0] ||
     INITIAL_SEGMENTS[0];
 
-  const corridorOptions = [ "Semua koridor", "Ciseke", "Caringin", "Gang H Nena", "Hegarmanah", "Sukawening",];
+  const corridorOptions = [
+    "Semua koridor",
+    "Ciseke",
+    "Caringin",
+    "Gang H Nena",
+    "Hegarmanah",
+    "Sukawening",
+  ];
+
+  // Hitung metrics jika summary belum tersedia dari cycle
+  const displayTotalSegments = summary ? summary.total_segments : segments.length;
+  const displayBrokenLights = summary
+    ? summary.total_broken_lights
+    : segments.reduce((acc, curr) => acc + curr.brokenLights, 0);
+  const displayEligible = summary
+    ? summary.eligible_count
+    : segments.filter((s) => s.priority !== "Perlu validasi").length;
+  const displayCapacity = summary?.capacity_quota ?? 3;
 
   return (
     <div className="p-8 bg-[#F7F8F5]">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-900 leading-tight">Prioritas perbaikan PJU </h1>
-          <p className="text-xs text-zinc-500 mt-1">Jatinangor, Sumedang &middot; Siklus November 2026</p>
+          <h1 className="text-2xl font-bold tracking-tight text-zinc-900 leading-tight">
+            Prioritas perbaikan PJU
+          </h1>
+          <p className="text-xs text-zinc-500 mt-1">
+            Jatinangor, Sumedang &middot; {cycleName || "Siklus Terkini"}
+          </p>
         </div>
-        <button type="button" className="px-4 py-2 bg-[#1a5b3e] hover:bg-[#164d34] text-white text-[13px] font-medium rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 shadow-xs">
+        <Link
+          href="/pemeringkatan"
+          className="px-4 py-2 bg-[#1a5b3e] hover:bg-[#164d34] text-white text-[13px] font-medium rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 shadow-xs"
+        >
           <span>Lihat pemeringkatan</span>
           <span className="text-sm font-semibold">&rarr;</span>
-        </button>
+        </Link>
       </div>
 
       <div className="bg-white rounded-xl border border-zinc-200/80 p-5 mb-6 shadow-xs grid grid-cols-4 divide-x divide-zinc-100">
         <div className="px-4 first:pl-2">
           <p className="text-[12px] text-zinc-400 mb-1">Segmen terdata</p>
-          <p className="text-2xl font-bold text-zinc-900">8</p>
+          <p className="text-2xl font-bold text-zinc-900">{displayTotalSegments}</p>
         </div>
         <div className="px-6">
           <p className="text-[12px] text-zinc-400 mb-1">Lampu mati</p>
-          <p className="text-2xl font-bold text-zinc-900">23</p>
+          <p className="text-2xl font-bold text-zinc-900">{displayBrokenLights}</p>
         </div>
         <div className="px-6">
           <p className="text-[12px] text-zinc-400 mb-1">Segmen layak</p>
-          <p className="text-2xl font-bold text-zinc-900">6</p>
+          <p className="text-2xl font-bold text-zinc-900">{displayEligible}</p>
         </div>
         <div className="px-6">
           <p className="text-[12px] text-zinc-400 mb-1">Kapasitas perbaikan</p>
-          <p className="text-2xl font-bold text-zinc-900">3</p>
+          <p className="text-2xl font-bold text-zinc-900">{displayCapacity}</p>
         </div>
       </div>
 
@@ -187,67 +237,124 @@ export default function HomePage() {
           <div className="flex items-center justify-between mb-3.5">
             <div>
               <h3 className="text-[15px] font-bold text-zinc-900">Peta segmen</h3>
-              <p className="text-[11px] text-zinc-400">Peta skematis &middot; posisi ilustratif</p>
+              <p className="text-[11px] text-zinc-400">
+                Peta interaktif &middot; Koordinat riil koridor gang
+              </p>
             </div>
 
             <div className="relative">
-              <select value={selectedCorridor} onChange={(e) => handleCorridorChange(e.target.value)} className="appearance-none bg-white border border-zinc-200 text-zinc-700 text-xs px-3 py-1.5 pr-8 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#1a5b3e] cursor-pointer">
+              <select
+                value={selectedCorridor}
+                onChange={(e) => handleCorridorChange(e.target.value)}
+                className="appearance-none bg-white border border-zinc-200 text-zinc-700 text-xs px-3 py-1.5 pr-8 rounded-lg focus:outline-none focus:ring-1 focus:ring-[#1a5b3e] cursor-pointer"
+              >
                 {corridorOptions.map((opt) => (
-                  <option key={opt} value={opt}>{opt}</option>
+                  <option key={opt} value={opt}>
+                    {opt}
+                  </option>
                 ))}
               </select>
-              <div className="absolute right-2.5 top-2 pointer-events-none text-zinc-400 text-xs">&or;</div>
+              <div className="absolute right-2.5 top-2 pointer-events-none text-zinc-400 text-xs">
+                &or;
+              </div>
             </div>
           </div>
 
-          <PriorityMap segments={INITIAL_SEGMENTS} selectedSegmentId={selectedSegmentId} onSelectSegment={setSelectedSegmentId} selectedCorridor={selectedCorridor}/>
+          <PriorityMap
+            segments={segments}
+            selectedSegmentId={selectedSegmentId}
+            onSelectSegment={setSelectedSegmentId}
+            selectedCorridor={selectedCorridor}
+          />
         </div>
 
         <div className="col-span-4 bg-white rounded-2xl border border-zinc-200/80 p-5 shadow-xs flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between">
               <span className="text-[11px] text-zinc-400 font-medium">Detail segmen</span>
-              {selectedSegment.rank > 0 ? (
-                <span className="px-2 py-0.5 rounded-full bg-[#edf4f0] text-[#1a5b3e] text-[11px] font-semibold">Peringkat {selectedSegment.rank}</span>
+              {selectedSegment.rank > 0 && selectedSegment.priority !== "Perlu validasi" ? (
+                <span className="px-2 py-0.5 rounded-full bg-[#edf4f0] text-[#1a5b3e] text-[11px] font-semibold">
+                  Peringkat {selectedSegment.rank}
+                </span>
               ) : (
-                <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-600 text-[11px] font-semibold border border-red-200">Perlu Validasi</span>
+                <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-600 text-[11px] font-semibold border border-red-200">
+                  Perlu Validasi
+                </span>
               )}
             </div>
 
             <h2 className="text-xl font-bold text-zinc-900 mt-2">{selectedSegment.name}</h2>
-            <p className="text-xs text-zinc-500 mt-0.5">Koridor {selectedSegment.corridor} &middot;{" "}{selectedSegment.segmentCode}</p>
-            <div className={`rounded-xl p-4 my-4 flex items-center justify-between ${ selectedSegment.priority === "Perlu validasi" ? "bg-red-50/70 border border-red-100" : "bg-[#edf4f0]/70" }`}>
+            <p className="text-xs text-zinc-500 mt-0.5">
+              Koridor {selectedSegment.corridor} &middot; {selectedSegment.segmentCode}
+            </p>
+            <div
+              className={`rounded-xl p-4 my-4 flex items-center justify-between ${
+                selectedSegment.priority === "Perlu validasi"
+                  ? "bg-red-50/70 border border-red-100"
+                  : "bg-[#edf4f0]/70"
+              }`}
+            >
               <span className="text-xs font-medium text-zinc-700">Skor TOPSIS</span>
-              <span className={`text-3xl font-extrabold ${ selectedSegment.priority === "Perlu validasi" ? "text-red-600" : "text-[#1a5b3e]" }`}>
-                {selectedSegment.score > 0 ? selectedSegment.score.toLocaleString("id-ID", { minimumFractionDigits: 3, maximumFractionDigits: 3, }) : "-"}
+              <span
+                className={`text-3xl font-extrabold ${
+                  selectedSegment.priority === "Perlu validasi"
+                    ? "text-red-600"
+                    : "text-[#1a5b3e]"
+                }`}
+              >
+                {selectedSegment.score > 0
+                  ? selectedSegment.score.toLocaleString("id-ID", {
+                      minimumFractionDigits: 3,
+                      maximumFractionDigits: 3,
+                    })
+                  : "-"}
               </span>
             </div>
 
             <div className="space-y-3 text-xs divide-y divide-zinc-100">
               <div className="flex items-center justify-between pt-1">
                 <span className="text-zinc-500">Lampu mati</span>
-                <span className="font-semibold text-zinc-800">{selectedSegment.brokenLights} dari{" "}{selectedSegment.totalLights} lampu</span>
+                <span className="font-semibold text-zinc-800">
+                  {selectedSegment.brokenLights} dari {selectedSegment.totalLights} lampu
+                </span>
               </div>
               <div className="flex items-center justify-between pt-3">
                 <span className="text-zinc-500">Curanmor &middot; 00.00&ndash;05.00 WIB</span>
-                <span className="font-semibold text-zinc-800">{selectedSegment.crimeCount} kasus</span>
+                <span className="font-semibold text-zinc-800">
+                  {selectedSegment.crimeCount} kasus
+                </span>
               </div>
               <div className="flex items-center justify-between pt-3">
                 <span className="text-zinc-500">Indekos dilayani</span>
-                <span className="font-semibold text-zinc-800">{selectedSegment.boardingCount} unit</span>
+                <span className="font-semibold text-zinc-800">
+                  {selectedSegment.boardingCount} unit
+                </span>
               </div>
             </div>
           </div>
 
           <div className="pt-4 border-t border-zinc-100 mt-6">
-            <p className="text-[11px] text-zinc-400 mb-3">Sumber &middot; Rekap simulasi <br />Inspeksi &middot;{" "}
-              <span className={ selectedSegment.inspectionDate.includes("Kadaluwarsa") ? "text-red-500 font-medium" : "" }>{selectedSegment.inspectionDate}</span>
+            <p className="text-[11px] text-zinc-400 mb-3">
+              Sumber &middot; Hasil Perhitungan TOPSIS <br />
+              Inspeksi &middot;{" "}
+              <span
+                className={
+                  selectedSegment.inspectionDate?.includes("Kadaluwarsa")
+                    ? "text-red-500 font-medium"
+                    : ""
+                }
+              >
+                {selectedSegment.inspectionDate}
+              </span>
             </p>
 
-            <button type="button" className="w-full py-2.5 px-3 rounded-lg border border-zinc-200 text-zinc-700 hover:bg-zinc-50 text-xs font-medium transition cursor-pointer flex items-center justify-center gap-1.5">
+            <Link
+              href="/pendataan"
+              className="w-full py-2.5 px-3 rounded-lg border border-zinc-200 text-zinc-700 hover:bg-zinc-50 text-xs font-medium transition cursor-pointer flex items-center justify-center gap-1.5"
+            >
               <span>Lihat data inspeksi</span>
               <span className="text-sm font-semibold">&rarr;</span>
-            </button>
+            </Link>
           </div>
         </div>
       </div>
@@ -255,10 +362,13 @@ export default function HomePage() {
       <div className="bg-white rounded-2xl border border-zinc-200/80 p-5 shadow-xs">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-[15px] font-bold text-zinc-900">Segmen teratas</h3>
-          <button type="button" className="text-xs text-zinc-400 hover:text-zinc-700 font-medium flex items-center gap-1 cursor-pointer">
+          <Link
+            href="/pemeringkatan"
+            className="text-xs text-zinc-400 hover:text-zinc-700 font-medium flex items-center gap-1 cursor-pointer"
+          >
             <span>Semua hasil</span>
             <span>&rarr;</span>
-          </button>
+          </Link>
         </div>
 
         <div className="overflow-x-auto">
@@ -274,23 +384,45 @@ export default function HomePage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100 text-zinc-700">
-              {INITIAL_SEGMENTS.filter((s) => s.rank > 0).map((seg) => {
-                const isSelected = seg.id === selectedSegmentId;
-                return (
-                  <tr key={seg.id} onClick={() => setSelectedSegmentId(seg.id)} className={`hover:bg-zinc-50/80 transition-colors cursor-pointer ${ isSelected ? "bg-[#edf4f0]/50" : "" }`}>
-                    <td className="py-3 px-3 font-semibold text-zinc-500">{seg.rank}</td>
-                    <td className="py-3 px-3 font-semibold text-zinc-900">{seg.name}</td>
-                    <td className="py-3 px-3 text-zinc-500">{seg.corridor}</td>
-                    <td className="py-3 px-3 font-medium">
-                      {seg.score.toLocaleString("id-ID", { minimumFractionDigits: 3, maximumFractionDigits: 3, })}
-                    </td>
-                    <td className="py-3 px-3 text-zinc-600">{seg.brokenLights}/{seg.totalLights}</td>
-                    <td className="py-3 px-3 text-right">
-                      <span className="inline-block px-2.5 py-0.5 rounded-full bg-[#edf4f0] text-[#1a5b3e] font-semibold text-[11px]">Layak</span>
-                    </td>
-                  </tr>
-                );
-              })}
+              {segments
+                .filter((s) => s.rank > 0)
+                .map((seg) => {
+                  const isSelected = seg.id === selectedSegmentId;
+                  const isEligible = seg.priority !== "Perlu validasi";
+                  return (
+                    <tr
+                      key={seg.id}
+                      onClick={() => setSelectedSegmentId(seg.id)}
+                      className={`hover:bg-zinc-50/80 transition-colors cursor-pointer ${
+                        isSelected ? "bg-[#edf4f0]/50" : ""
+                      }`}
+                    >
+                      <td className="py-3 px-3 font-semibold text-zinc-500">{seg.rank}</td>
+                      <td className="py-3 px-3 font-semibold text-zinc-900">{seg.name}</td>
+                      <td className="py-3 px-3 text-zinc-500">{seg.corridor}</td>
+                      <td className="py-3 px-3 font-medium">
+                        {seg.score.toLocaleString("id-ID", {
+                          minimumFractionDigits: 3,
+                          maximumFractionDigits: 3,
+                        })}
+                      </td>
+                      <td className="py-3 px-3 text-zinc-600">
+                        {seg.brokenLights}/{seg.totalLights}
+                      </td>
+                      <td className="py-3 px-3 text-right">
+                        {isEligible ? (
+                          <span className="inline-block px-2.5 py-0.5 rounded-full bg-[#edf4f0] text-[#1a5b3e] font-semibold text-[11px]">
+                            Layak
+                          </span>
+                        ) : (
+                          <span className="inline-block px-2.5 py-0.5 rounded-full bg-red-50 text-red-600 font-semibold text-[11px]">
+                            Perlu Validasi
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
             </tbody>
           </table>
         </div>
