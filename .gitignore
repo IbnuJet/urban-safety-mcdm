@@ -35,6 +35,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# file
+scrapping-berita.py
 # python / backend
 backend/venv/
 backend/.venv/
