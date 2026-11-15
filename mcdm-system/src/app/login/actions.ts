@@ -21,6 +21,13 @@ export async function loginWithCredentials(
   password: string
 ): Promise<LoginResult> {
   const cleanId = identifier.trim().toLowerCase();
+  if (!cleanId || !password) {
+    return {
+      success: false,
+      message: "Email/username dan kata sandi wajib diisi.",
+    };
+  }
+
   const matchedSeeder = SEEDER_ACCOUNTS.find(
     (acc) =>
       acc.username.toLowerCase() === cleanId ||
@@ -49,36 +56,27 @@ export async function loginWithCredentials(
       await saveSession(data.access_token, data.user);
       return { success: true };
     }
-  } catch {}
 
-  if (matchedSeeder) {
-    const mockToken = `mock-jwt-token-${matchedSeeder.username}-${Date.now()}`;
-    const mockUser = {
-      id: matchedSeeder.username === "admin" ? 1 : matchedSeeder.username === "penilai" ? 3 : 4,
-      username: matchedSeeder.username,
-      email: matchedSeeder.email,
-      full_name: matchedSeeder.full_name,
-      role: matchedSeeder.role,
-      is_active: true,
-      created_at: new Date().toISOString(),
+    const errData = await res.json().catch(() => null);
+    return {
+      success: false,
+      message: errData?.detail || "Email/username atau kata sandi salah.",
     };
-    await saveSession(mockToken, mockUser);
-    return { success: true };
-  }
-
-  if (cleanId) {
-    const mockToken = `mock-jwt-token-custom-${Date.now()}`;
-    const mockUser = {
-      id: 99,
-      username: cleanId.includes("@") ? cleanId.split("@")[0] : cleanId,
-      email: cleanId.includes("@") ? cleanId : `${cleanId}@instansi.go.id`,
-      full_name: cleanId.includes("@") ? cleanId.split("@")[0] : cleanId,
-      role: "PENILAI" as UserRole,
-      is_active: true,
-      created_at: new Date().toISOString(),
-    };
-    await saveSession(mockToken, mockUser);
-    return { success: true };
+  } catch {
+    if (matchedSeeder && matchedSeeder.password === password) {
+      const mockToken = `mock-jwt-token-${matchedSeeder.username}-${Date.now()}`;
+      const mockUser = {
+        id: matchedSeeder.username === "admin" ? 1 : matchedSeeder.username === "operator" ? 2 : matchedSeeder.username === "penilai" ? 3 : 4,
+        username: matchedSeeder.username,
+        email: matchedSeeder.email,
+        full_name: matchedSeeder.full_name,
+        role: matchedSeeder.role,
+        is_active: true,
+        created_at: new Date().toISOString(),
+      };
+      await saveSession(mockToken, mockUser);
+      return { success: true };
+    }
   }
 
   return {
