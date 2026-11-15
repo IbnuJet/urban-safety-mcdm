@@ -37,3 +37,13 @@ next-env.d.ts
 
 # file
 scrapping-berita.py
+# python / backend
+backend/venv/
+backend/.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.db
+*.sqlite3
+backend/.env
+.pytest_cache/
