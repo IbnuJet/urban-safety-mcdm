@@ -15,6 +15,7 @@ from app.models.models import (
     CycleRankingResult,
     CycleStatus,
     EvaluationCycle,
+    SegmentCriterionValue,
     User,
     UserRole,
 )
@@ -29,6 +30,7 @@ from app.services.topsis_engine import (
     evaluate_segment_eligibility,
     get_priority_category,
 )
+from app.services.ahp_engine import calculate_ahp
 
 router = APIRouter(prefix="/topsis", tags=["TOPSIS Ranking"])
 
@@ -43,6 +45,8 @@ def _build_ranking_item(res: CycleRankingResult) -> CycleRankingItemResponse:
         is_eligible=res.is_eligible,
         ineligible_reason=res.ineligible_reason,
         snapshot_data=res.snapshot_data,
+        normalized_values=res.snapshot_data.get("normalized_values", {}),
+        weighted_values=res.snapshot_data.get("weighted_values", {}),
         norm_c1=res.norm_c1,
         norm_c2=res.norm_c2,
         norm_c3=res.norm_c3,
@@ -102,7 +106,9 @@ def run_topsis_cycle(
 ) -> TOPSISCycleDetailResponse:
     """Execute a new TOPSIS ranking cycle using the active consistent AHP weight version."""
     active_ahp = db.scalar(
-        select(AHPWeightVersion).where(
+        select(AHPWeightVersion)
+        .options(selectinload(AHPWeightVersion.criteria))
+        .where(
             AHPWeightVersion.is_active.is_(True),
             AHPWeightVersion.is_consistent.is_(True),
         )
@@ -111,6 +117,61 @@ def run_topsis_cycle(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Belum ada versi bobot AHP yang aktif dan konsisten (CR <= 0.10).",
+        )
+
+    if active_ahp.criteria:
+        criterion_definitions = [
+            {
+                "key": criterion.key,
+                "name": criterion.name,
+                "direction": criterion.direction,
+                "weight": criterion.weight,
+            }
+            for criterion in active_ahp.criteria
+        ]
+    elif len(active_ahp.pairwise_matrix) == 3:
+        criterion_definitions = [
+            {
+                "key": "broken_lights",
+                "name": "Kerusakan Lampu PJU",
+                "direction": "max",
+                "weight": active_ahp.w_light_damage,
+            },
+            {
+                "key": "dawn_crime_count",
+                "name": "Curanmor Dini Hari",
+                "direction": "max",
+                "weight": active_ahp.w_dawn_crime,
+            },
+            {
+                "key": "boarding_house_count",
+                "name": "Kepadatan Indekos",
+                "direction": "max",
+                "weight": active_ahp.w_boarding_density,
+            },
+        ]
+    else:
+        calculated = calculate_ahp(active_ahp.pairwise_matrix)
+        criterion_definitions = [
+            {
+                "key": f"criterion_{index + 1}",
+                "name": f"Kriteria {index + 1}",
+                "direction": "max",
+                "weight": calculated.weights[index],
+            }
+            for index in range(len(calculated.weights))
+        ]
+    criterion_keys = [criterion["key"] for criterion in criterion_definitions]
+    weights = [float(criterion["weight"]) for criterion in criterion_definitions]
+    criteria_directions = (
+        payload.criteria_directions
+        if payload.criteria_directions is not None
+        else [criterion["direction"] for criterion in criterion_definitions]
+    )
+    if len(criteria_directions) != len(criterion_keys):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Jumlah criteria_directions harus sama dengan jumlah kriteria AHP aktif.",
         )
 
     segments = db.scalars(
@@ -125,17 +186,55 @@ def run_topsis_cycle(
         )
 
     today = date.today()
+    custom_criterion_keys = set(criterion_keys) - {
+        "broken_lights",
+        "dawn_crime_count",
+        "boarding_house_count",
+    }
+    dynamic_values: dict[int, dict[str, float]] = {}
+    if segments and custom_criterion_keys:
+        values = db.scalars(
+            select(SegmentCriterionValue).where(
+                SegmentCriterionValue.segment_id.in_([segment.id for segment in segments]),
+                SegmentCriterionValue.criterion_key.in_(custom_criterion_keys),
+            )
+        ).all()
+        for value in values:
+            dynamic_values.setdefault(value.segment_id, {})[
+                value.criterion_key
+            ] = value.value
+
     eligible_inputs: list[TOPSISInputItem] = []
     snapshots_by_segment: dict[int, dict] = {}
     ineligible_records: list[tuple[AlleySegment, str]] = []
 
     for seg in segments:
         obs = seg.observation
+        criterion_values: dict[str, float] = dict(dynamic_values.get(seg.id, {}))
+        if obs is not None:
+            legacy_values = {
+                "broken_lights": float(obs.broken_lights),
+                "dawn_crime_count": (
+                    float(obs.dawn_crime_count)
+                    if obs.dawn_crime_count is not None
+                    else None
+                ),
+                "boarding_house_count": float(obs.boarding_house_count),
+            }
+            criterion_values.update(
+                {
+                    key: value
+                    for key, value in legacy_values.items()
+                    if value is not None
+                }
+            )
         is_eligible, reason = evaluate_segment_eligibility(
             segment=seg,
             observation=obs,
             reference_date=today,
             expiry_days=settings.INSPECTION_EXPIRY_DAYS,
+            criteria_keys=criterion_keys,
+            criteria_values=criterion_values,
         )
         if obs is not None:
             snapshots_by_segment[seg.id] = {
@@ -143,20 +242,22 @@ def run_topsis_cycle(
                 "broken_lights": obs.broken_lights,
                 "dawn_crime_count": obs.dawn_crime_count,
                 "boarding_house_count": obs.boarding_house_count,
+                "criteria_values": criterion_values,
                 "inspection_date": obs.inspection_date.isoformat(),
                 "data_source": obs.data_source.value,
             }
         else:
             snapshots_by_segment[seg.id] = {}
 
-        if is_eligible and obs is not None and obs.dawn_crime_count is not None:
+        if is_eligible and obs is not None:
             eligible_inputs.append(
                 TOPSISInputItem(
                     segment_id=seg.id,
                     segment_code=seg.segment_code,
                     broken_lights=obs.broken_lights,
-                    dawn_crime_count=obs.dawn_crime_count,
+                    dawn_crime_count=obs.dawn_crime_count or 0,
                     boarding_house_count=obs.boarding_house_count,
+                    criteria_values=criterion_values,
                 )
             )
         else:
@@ -168,28 +269,41 @@ def run_topsis_cycle(
             detail="Tidak ada segmen gang yang memenuhi syarat kelayakan (eligible) untuk pemeringkatan TOPSIS.",
         )
 
-    weights = (
-        active_ahp.w_light_damage,
-        active_ahp.w_dawn_crime,
-        active_ahp.w_boarding_density,
-    )
-    ranked_items = calculate_topsis(
-        items=eligible_inputs,
-        weights=weights,
-        criteria_directions=payload.criteria_directions,
-    )
+    try:
+        ranked_items = calculate_topsis(
+            items=eligible_inputs,
+            weights=weights,
+            criteria_directions=criteria_directions,
+            criterion_keys=criterion_keys,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+    weight_map = {
+        criterion["key"]: float(criterion["weight"])
+        for criterion in criterion_definitions
+    }
+    weights_snapshot = {
+        "criteria": criterion_definitions,
+        "weights": weight_map,
+        "cr": active_ahp.cr,
+        "version_name": active_ahp.version_name,
+    }
+    if "broken_lights" in weight_map:
+        weights_snapshot["w_light_damage"] = weight_map["broken_lights"]
+    if "dawn_crime_count" in weight_map:
+        weights_snapshot["w_dawn_crime"] = weight_map["dawn_crime_count"]
+    if "boarding_house_count" in weight_map:
+        weights_snapshot["w_boarding_density"] = weight_map["boarding_house_count"]
 
     cycle = EvaluationCycle(
         cycle_name=payload.cycle_name.strip(),
         executed_by=current_user.id,
         ahp_version_id=active_ahp.id,
-        weights_snapshot={
-            "w_light_damage": active_ahp.w_light_damage,
-            "w_dawn_crime": active_ahp.w_dawn_crime,
-            "w_boarding_density": active_ahp.w_boarding_density,
-            "cr": active_ahp.cr,
-            "version_name": active_ahp.version_name,
-        },
+        weights_snapshot=weights_snapshot,
         status=CycleStatus.RANKED,
     )
     db.add(cycle)
@@ -202,7 +316,11 @@ def run_topsis_cycle(
                 segment_id=ranked.segment_id,
                 is_eligible=True,
                 ineligible_reason=None,
-                snapshot_data=snapshots_by_segment[ranked.segment_id],
+                snapshot_data={
+                    **snapshots_by_segment[ranked.segment_id],
+                    "normalized_values": ranked.normalized_values,
+                    "weighted_values": ranked.weighted_values,
+                },
                 norm_c1=ranked.norm_c1,
                 norm_c2=ranked.norm_c2,
                 norm_c3=ranked.norm_c3,

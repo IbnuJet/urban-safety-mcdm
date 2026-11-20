@@ -4,6 +4,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 import io
+import math
 from typing import Any
 
 import pandas as pd
@@ -64,6 +65,7 @@ def validate_csv_observations(
     known_segment_codes: set[str],
     reference_date: date,
     expiry_days: int,
+    criterion_keys: set[str] | None = None,
 ) -> CSVValidationSummary:
     """Parse and validate CSV observation rows before staging into csv_import_batches."""
     try:
@@ -84,6 +86,11 @@ def validate_csv_observations(
     if missing_cols:
         missing_list = ", ".join(sorted(missing_cols))
         raise ValueError(f"Kolom wajib CSV tidak ditemukan: {missing_list}.")
+    dynamic_keys = criterion_keys or set()
+    missing_criteria = dynamic_keys - set(df.columns)
+    if missing_criteria:
+        missing_list = ", ".join(sorted(missing_criteria))
+        raise ValueError(f"Kolom kriteria wajib CSV tidak ditemukan: {missing_list}.")
 
     if len(df) == 0:
         raise ValueError("File CSV tidak memiliki baris data.")
@@ -260,6 +267,27 @@ def validate_csv_observations(
             )
 
         # 5. Inspection date & expiry check
+        criteria_values: dict[str, float | None] = {}
+        for key in dynamic_keys:
+            raw_value = str(row[key]).strip()
+            try:
+                if not raw_value:
+                    raise ValueError("Nilai wajib diisi.")
+                value = float(raw_value)
+                if not math.isfinite(value):
+                    raise ValueError("Nilai harus berupa angka finite.")
+                criteria_values[key] = value
+            except ValueError as exc:
+                criteria_values[key] = None
+                issues.append(
+                    {
+                        "code": "INVALID_CRITERION_VALUE",
+                        "severity": "ERROR",
+                        "message": f"Nilai kriteria '{key}' tidak valid: {exc}",
+                    }
+                )
+
+        # 6. Inspection date & expiry check
         parsed_date_str: str | None = None
         try:
             parsed_date = _parse_date(str(row["inspection_date"]))
@@ -302,6 +330,7 @@ def validate_csv_observations(
                 "broken_lights": broken_lights,
                 "dawn_crime_count": dawn_crime_count,
                 "boarding_house_count": boarding_house_count,
+                "criteria_values": criteria_values,
                 "inspection_date": parsed_date_str,
                 "status": row_status,
                 "issues": issues,

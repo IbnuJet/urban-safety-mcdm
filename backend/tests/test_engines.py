@@ -77,11 +77,11 @@ def test_ahp_consistent_matrix_accuracy():
     ]
     res = calculate_ahp(matrix)
 
-    assert pytest.approx(res.w_light_damage, rel=1e-6) == 2.0 / 7.0
-    assert pytest.approx(res.w_dawn_crime, rel=1e-6) == 4.0 / 7.0
-    assert pytest.approx(res.w_boarding_density, rel=1e-6) == 1.0 / 7.0
+    assert pytest.approx(res.weights[0], rel=1e-6) == 2.0 / 7.0
+    assert pytest.approx(res.weights[1], rel=1e-6) == 4.0 / 7.0
+    assert pytest.approx(res.weights[2], rel=1e-6) == 1.0 / 7.0
     assert pytest.approx(
-        res.w_light_damage + res.w_dawn_crime + res.w_boarding_density, rel=1e-6
+        sum(res.weights), rel=1e-6
     ) == 1.0
     assert pytest.approx(res.lambda_max, abs=1e-6) == 3.0
     assert res.ci == 0.0
@@ -100,6 +100,167 @@ def test_ahp_inconsistent_matrix_flagged():
 
     assert res.cr > 0.10
     assert res.is_consistent is False
+
+
+def test_ahp_accepts_dynamic_number_of_criteria():
+    criterion_weights = [1.0, 2.0, 4.0, 8.0]
+    matrix = [
+        [left / right for right in criterion_weights]
+        for left in criterion_weights
+    ]
+
+    res = calculate_ahp(matrix)
+
+    assert res.weights == pytest.approx([1 / 15, 2 / 15, 4 / 15, 8 / 15])
+    assert res.lambda_max == pytest.approx(4.0)
+    assert res.ci == pytest.approx(0.0, abs=1e-12)
+    assert res.ri == pytest.approx(0.90)
+    assert res.cr == pytest.approx(0.0, abs=1e-12)
+    assert res.is_consistent is True
+
+
+@pytest.mark.parametrize(
+    ("matrix", "expected_weights", "expected_cr"),
+    [
+        ([[1.0]], [1.0], 0.0),
+        ([[1.0, 3.0], [1 / 3.0, 1.0]], [0.75, 0.25], 0.0),
+    ],
+)
+def test_ahp_handles_one_or_two_criteria(matrix, expected_weights, expected_cr):
+    res = calculate_ahp(matrix)
+
+    assert res.weights == pytest.approx(expected_weights)
+    assert res.cr == pytest.approx(expected_cr)
+    assert res.is_consistent is True
+
+
+def test_topsis_accepts_dynamic_criterion_values():
+    items = [
+        TOPSISInputItem(
+            1,
+            "GG-A",
+            broken_lights=0,
+            dawn_crime_count=0,
+            boarding_house_count=0,
+            criteria_values={"lighting": 8.0, "crime": 2.0, "traffic": 9.0, "vandalism": 1.0},
+        ),
+        TOPSISInputItem(
+            2,
+            "GG-B",
+            broken_lights=0,
+            dawn_crime_count=0,
+            boarding_house_count=0,
+            criteria_values={"lighting": 2.0, "crime": 8.0, "traffic": 3.0, "vandalism": 9.0},
+        ),
+    ]
+
+    ranked = calculate_topsis(
+        items,
+        weights=[0.4, 0.3, 0.2, 0.1],
+        criteria_directions=["max", "min", "max", "min"],
+        criterion_keys=["lighting", "crime", "traffic", "vandalism"],
+    )
+
+    assert len(ranked) == 2
+    assert ranked[0].normalized_values.keys() == {
+        "lighting",
+        "crime",
+        "traffic",
+        "vandalism",
+    }
+
+
+def test_dynamic_criteria_flow_from_ahp_to_observation_and_topsis(
+    client: TestClient,
+):
+    criteria = [
+        {"key": "broken_lights", "name": "Lampu rusak", "direction": "max"},
+        {"key": "dawn_crime_count", "name": "Curanmor", "direction": "max"},
+        {"key": "boarding_house_count", "name": "Indekos", "direction": "max"},
+        {"key": "road_risk", "name": "Risiko jalan", "direction": "min"},
+    ]
+    base_weights = [1.0, 2.0, 4.0, 8.0]
+    matrix = [
+        [left / right for right in base_weights]
+        for left in base_weights
+    ]
+
+    evaluator_headers = _login(client, "penilai", "penilai123")
+    preview = client.post(
+        "/api/v1/ahp/calculate-preview",
+        headers=evaluator_headers,
+        json={"pairwise_matrix": matrix, "criteria": criteria},
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["weights"] == pytest.approx([1 / 15, 2 / 15, 4 / 15, 8 / 15])
+
+    created = client.post(
+        "/api/v1/ahp/versions",
+        headers=evaluator_headers,
+        json={
+            "version_name": "AHP 4 kriteria",
+            "pairwise_matrix": matrix,
+            "criteria": criteria,
+            "activate_immediately": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert [item["key"] for item in created.json()["criteria"]] == [
+        item["key"] for item in criteria
+    ]
+
+    active_criteria = client.get(
+        "/api/v1/ahp/criteria", headers=evaluator_headers
+    )
+    assert active_criteria.status_code == 200
+    assert [item["key"] for item in active_criteria.json()] == [
+        item["key"] for item in criteria
+    ]
+
+    operator_headers = _login(client, "operator", "operator123")
+    missing_value = client.post(
+        "/api/v1/observations/form",
+        headers=operator_headers,
+        json={
+            "segment_id": 1,
+            "total_lights": 10,
+            "broken_lights": 3,
+            "dawn_crime_count": 2,
+            "boarding_house_count": 5,
+            "inspection_date": date.today().isoformat(),
+        },
+    )
+    assert missing_value.status_code == 422
+
+    observation = client.post(
+        "/api/v1/observations/form",
+        headers=operator_headers,
+        json={
+            "segment_id": 1,
+            "total_lights": 10,
+            "broken_lights": 3,
+            "dawn_crime_count": 2,
+            "boarding_house_count": 5,
+            "inspection_date": date.today().isoformat(),
+            "criteria_values": {"road_risk": 2.5},
+        },
+    )
+    assert observation.status_code == 200, observation.text
+    assert observation.json()["criteria_values"] == {"road_risk": 2.5}
+
+    pju_headers = _login(client, "pju_lead", "pju123")
+    cycle = client.post(
+        "/api/v1/topsis/cycles",
+        headers=pju_headers,
+        json={"cycle_name": "TOPSIS 4 kriteria"},
+    )
+    assert cycle.status_code == 201, cycle.text
+    cycle_data = cycle.json()
+    assert cycle_data["weights_snapshot"]["weights"]["road_risk"] == pytest.approx(8 / 15)
+    assert cycle_data["eligible_count"] == 1
+    assert cycle_data["eligible_results"][0]["snapshot_data"]["normalized_values"][
+        "road_risk"
+    ] == pytest.approx(1.0)
 
 
 def test_ahp_reject_activation_when_cr_above_threshold(client: TestClient):
@@ -285,6 +446,33 @@ def test_csv_validator_sample_file():
         "INCOMPLETE_CRIME_DATA",
         "INVALID_LIGHT_LOGIC",
     }.issubset(issue_codes)
+
+
+def test_csv_validator_accepts_configured_criterion_columns():
+    csv_bytes = (
+        b"segment_code,total_lights,broken_lights,dawn_crime_count,"
+        b"boarding_house_count,inspection_date,road_risk\n"
+        b"GG-CSK-001,10,3,2,5,2026-11-13,2.5\n"
+    )
+    summary = validate_csv_observations(
+        csv_bytes=csv_bytes,
+        known_segment_codes={"GG-CSK-001"},
+        reference_date=date(2026, 11, 13),
+        expiry_days=90,
+        criterion_keys={"road_risk"},
+    )
+
+    assert summary.valid_rows == 1
+    assert summary.rows[0]["criteria_values"] == {"road_risk": 2.5}
+
+    with pytest.raises(ValueError, match="road_risk"):
+        validate_csv_observations(
+            csv_bytes=b"segment_code,total_lights,broken_lights,dawn_crime_count,boarding_house_count,inspection_date\n",
+            known_segment_codes={"GG-CSK-001"},
+            reference_date=date(2026, 11, 13),
+            expiry_days=90,
+            criterion_keys={"road_risk"},
+        )
 
 
 # ---------------------------------------------------------------------------

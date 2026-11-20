@@ -4,18 +4,32 @@ from dataclasses import dataclass
 
 import numpy as np
 
-RI_3: float = 0.58
+RANDOM_INDEX: dict[int, float] = {
+    1: 0.00,
+    2: 0.00,
+    3: 0.58,
+    4: 0.90,
+    5: 1.12,
+    6: 1.24,
+    7: 1.32,
+    8: 1.41,
+    9: 1.45,
+    10: 1.49,
+    11: 1.51,
+    12: 1.48,
+    13: 1.56,
+    14: 1.57,
+    15: 1.59,
+}
 CR_THRESHOLD: float = 0.10
 
 
 @dataclass(frozen=True)
 class AHPResult:
-    """Result of 3x3 AHP priority weight calculation and consistency check."""
+    """AHP priority weights and consistency metrics for any supported matrix size."""
 
     pairwise_matrix: list[list[float]]
-    w_light_damage: float
-    w_dawn_crime: float
-    w_boarding_density: float
+    weights: list[float]
     lambda_max: float
     ci: float
     ri: float
@@ -24,26 +38,28 @@ class AHPResult:
 
 
 def calculate_ahp(pairwise_matrix: list[list[float]]) -> AHPResult:
-    """Compute AHP criterion weights and Consistency Ratio (CR) for a 3x3 matrix.
+    """Compute AHP weights and consistency metrics for an N×N pairwise matrix."""
+    try:
+        matrix = np.asarray(pairwise_matrix, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Matriks perbandingan berpasangan AHP harus berisi angka.") from exc
 
-    Criteria order:
-    - Index 0 (C1): Kerusakan Lampu PJU (broken_lights)
-    - Index 1 (C2): Rekap Curanmor Dini Hari (dawn_crime_count)
-    - Index 2 (C3): Kepadatan Indekos (boarding_house_count)
-    """
-    matrix = np.asarray(pairwise_matrix, dtype=np.float64)
-
-    if matrix.shape != (3, 3):
-        raise ValueError("Matriks perbandingan berpasangan AHP harus berukuran 3x3.")
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1] or matrix.shape[0] < 1:
+        raise ValueError("Matriks perbandingan berpasangan AHP harus berbentuk persegi N×N.")
+    n = matrix.shape[0]
+    if n not in RANDOM_INDEX:
+        raise ValueError(
+            f"Jumlah kriteria AHP harus antara 1 dan {max(RANDOM_INDEX)}."
+        )
     if not np.all(np.isfinite(matrix)) or np.any(matrix <= 0.0):
         raise ValueError("Seluruh elemen matriks AHP harus bernilai numerik positif (> 0).")
 
-    for i in range(3):
+    for i in range(n):
         if abs(matrix[i, i] - 1.0) > 1e-6:
             raise ValueError(
                 f"Elemen diagonal matriks AHP pada posisi ({i + 1}, {i + 1}) harus bernilai 1."
             )
-        for j in range(i + 1, 3):
+        for j in range(i + 1, n):
             product = matrix[i, j] * matrix[j, i]
             if abs(product - 1.0) > 0.02:
                 raise ValueError(
@@ -61,20 +77,19 @@ def calculate_ahp(pairwise_matrix: list[list[float]]) -> AHPResult:
     # 3. Consistency check
     weighted_sum = matrix @ weights
     lambda_max = float(np.mean(weighted_sum / weights))
-    ci = float((lambda_max - 3.0) / (3.0 - 1.0))
+    ci = 0.0 if n <= 2 else float((lambda_max - n) / (n - 1))
     if -1e-12 <= ci < 0.0:
         ci = 0.0
-    cr = float(ci / RI_3)
+    ri = RANDOM_INDEX[n]
+    cr = 0.0 if ri == 0.0 else float(ci / ri)
     is_consistent = bool(cr <= CR_THRESHOLD)
 
     return AHPResult(
         pairwise_matrix=[[float(val) for val in row] for row in matrix.tolist()],
-        w_light_damage=float(weights[0]),
-        w_dawn_crime=float(weights[1]),
-        w_boarding_density=float(weights[2]),
+        weights=[float(weight) for weight in weights],
         lambda_max=lambda_max,
         ci=ci,
-        ri=RI_3,
+        ri=ri,
         cr=cr,
         is_consistent=is_consistent,
     )

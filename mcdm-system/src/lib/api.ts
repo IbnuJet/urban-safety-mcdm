@@ -397,10 +397,12 @@ export interface ObservationFormRequest {
   dawn_crime_count?: number | null;
   boarding_house_count: number;
   inspection_date: string;
+  criteria_values?: Record<string, number>;
 }
 
 export interface ObservationFormResponse {
   observation: SegmentObservationBrief;
+  criteria_values: Record<string, number>;
   warnings?: string[];
 }
 
@@ -417,6 +419,7 @@ export interface CSVValidatedRow {
   broken_lights: number | null;
   dawn_crime_count: number | null;
   boarding_house_count: number | null;
+  criteria_values?: Record<string, number | null>;
   inspection_date: string | null;
   status: "VALID" | "WARNING" | "ERROR";
   issues?: CSVValidationIssue[];
@@ -443,6 +446,7 @@ export interface CSVRowCorrection {
   dawn_crime_count?: number | null;
   boarding_house_count: number;
   inspection_date: string;
+  criteria_values?: Record<string, number>;
 }
 
 export interface CSVConfirmRequest {
@@ -513,15 +517,25 @@ export async function confirmCSVBatch(
 // -------------------------------------------------------------
 // 3. PEMBOBOTAN AHP & KONSISTENSI
 // -------------------------------------------------------------
+export interface AHPCriterion {
+  key: string;
+  name: string;
+  direction: "max" | "min";
+  weight?: number;
+}
+
 export interface AHPCalculateRequest {
   pairwise_matrix: number[][];
+  criteria: AHPCriterion[];
 }
 
 export interface AHPCalculateResponse {
   pairwise_matrix: number[][];
-  w_light_damage: number;
-  w_dawn_crime: number;
-  w_boarding_density: number;
+  criteria: AHPCriterion[];
+  weights: number[];
+  w_light_damage?: number;
+  w_dawn_crime?: number;
+  w_boarding_density?: number;
   lambda_max: number;
   ci: number;
   ri: number;
@@ -531,6 +545,7 @@ export interface AHPCalculateResponse {
 
 export interface AHPVersionCreateRequest {
   pairwise_matrix: number[][];
+  criteria: AHPCriterion[];
   version_name: string;
   activate_immediately?: boolean;
 }
@@ -540,9 +555,11 @@ export interface AHPVersionResponse {
   version_name: string;
   created_by: number;
   pairwise_matrix: number[][];
-  w_light_damage: number;
-  w_dawn_crime: number;
-  w_boarding_density: number;
+  criteria: AHPCriterion[];
+  weights: number[];
+  w_light_damage?: number;
+  w_dawn_crime?: number;
+  w_boarding_density?: number;
   lambda_max: number;
   ci: number;
   ri: number;
@@ -553,50 +570,75 @@ export interface AHPVersionResponse {
 }
 
 export async function calculateAHPPreview(
-  pairwise_matrix: number[][]
+  pairwise_matrix: number[][],
+  criteria: AHPCriterion[]
 ): Promise<AHPCalculateResponse> {
   try {
     const res = await fetch(`${BACKEND_API_URL}/ahp/calculate-preview`, {
       method: "POST",
       headers: getAuthHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ pairwise_matrix }),
+      body: JSON.stringify({ pairwise_matrix, criteria }),
     });
     if (res.ok) {
       return await res.json();
     }
   } catch {}
 
-  // Fallback perhitungan AHP lokal (NumPy simulation)
-  const [a12, a13] = [pairwise_matrix[0][1], pairwise_matrix[0][2]];
-  const a23 = pairwise_matrix[1][2];
-  const m = [
-    [1.0, a12, a13],
-    [1.0 / a12, 1.0, a23],
-    [1.0 / a13, 1.0 / a23, 1.0],
-  ];
-  const colSums = [0, 1, 2].map(
-    (c) => m[0][c] + m[1][c] + m[2][c]
+  const n = pairwise_matrix.length;
+  const colSums = Array.from({ length: n }, (_, c) =>
+    pairwise_matrix.reduce((sum, row) => sum + row[c], 0)
   );
-  const normM = m.map((row) => row.map((val, c) => val / colSums[c]));
-  const w = normM.map(
-    (row) => row.reduce((acc, v) => acc + v, 0) / 3
+  const normalized = pairwise_matrix.map((row) =>
+    row.map((value, column) => value / colSums[column])
   );
-
-  const Aw = [0, 1, 2].map(
-    (r) => m[r][0] * w[0] + m[r][1] * w[1] + m[r][2] * w[2]
+  const weights = normalized.map(
+    (row) => row.reduce((sum, value) => sum + value, 0) / n
   );
   const lambda_max =
-    (Aw[0] / w[0] + Aw[1] / w[1] + Aw[2] / w[2]) / 3;
-  const ci = (lambda_max - 3) / (3 - 1);
-  const ri = 0.58; // RI untuk n=3
-  const cr = ci / ri;
+    pairwise_matrix.reduce(
+      (sum, row, index) =>
+        sum +
+        row.reduce((weightedSum, value, column) => weightedSum + value * weights[column], 0) /
+          weights[index],
+      0
+    ) / n;
+  const ci = n <= 2 ? 0 : (lambda_max - n) / (n - 1);
+  const randomIndex: Record<number, number> = {
+    1: 0,
+    2: 0,
+    3: 0.58,
+    4: 0.9,
+    5: 1.12,
+    6: 1.24,
+    7: 1.32,
+    8: 1.41,
+    9: 1.45,
+    10: 1.49,
+    11: 1.51,
+    12: 1.48,
+    13: 1.56,
+    14: 1.57,
+    15: 1.59,
+  };
+  const ri = randomIndex[n];
+  if (ri === undefined) {
+    throw new Error("Perhitungan AHP lokal mendukung 1 sampai 15 kriteria.");
+  }
+  const cr = ri === 0 ? 0 : ci / ri;
   const is_consistent = cr <= 0.1;
 
   return {
-    pairwise_matrix: m,
-    w_light_damage: Number(w[0].toFixed(4)),
-    w_dawn_crime: Number(w[1].toFixed(4)),
-    w_boarding_density: Number(w[2].toFixed(4)),
+    pairwise_matrix,
+    criteria: criteria.map((criterion, index) => ({
+      ...criterion,
+      weight: Number(weights[index].toFixed(4)),
+    })),
+    weights: weights.map((weight) => Number(weight.toFixed(4))),
+    w_light_damage: criteria.find((criterion) => criterion.key === "broken_lights")?.weight,
+    w_dawn_crime: criteria.find((criterion) => criterion.key === "dawn_crime_count")?.weight,
+    w_boarding_density: criteria.find(
+      (criterion) => criterion.key === "boarding_house_count"
+    )?.weight,
     lambda_max: Number(lambda_max.toFixed(4)),
     ci: Number(ci.toFixed(4)),
     ri,
@@ -626,6 +668,12 @@ export async function fetchAHPVersions(): Promise<AHPVersionResponse[]> {
         [0.5, 1.0, 3.0],
         [0.25, 0.3333, 1.0],
       ],
+      criteria: [
+        { key: "broken_lights", name: "Kerusakan Lampu PJU", direction: "max", weight: 0.5571 },
+        { key: "dawn_crime_count", name: "Curanmor Dini Hari", direction: "max", weight: 0.3202 },
+        { key: "boarding_house_count", name: "Kepadatan Indekos", direction: "max", weight: 0.1226 },
+      ],
+      weights: [0.5571, 0.3202, 0.1226],
       w_light_damage: 0.5571,
       w_dawn_crime: 0.3202,
       w_boarding_density: 0.1226,
@@ -646,6 +694,12 @@ export async function fetchAHPVersions(): Promise<AHPVersionResponse[]> {
         [2.0, 1.0, 4.0],
         [0.3333, 0.25, 1.0],
       ],
+      criteria: [
+        { key: "broken_lights", name: "Kerusakan Lampu PJU", direction: "max", weight: 0.3196 },
+        { key: "dawn_crime_count", name: "Curanmor Dini Hari", direction: "max", weight: 0.5584 },
+        { key: "boarding_house_count", name: "Kepadatan Indekos", direction: "max", weight: 0.122 },
+      ],
+      weights: [0.3196, 0.5584, 0.122],
       w_light_damage: 0.3196,
       w_dawn_crime: 0.5584,
       w_boarding_density: 0.122,
@@ -658,6 +712,17 @@ export async function fetchAHPVersions(): Promise<AHPVersionResponse[]> {
       created_at: "2026-11-10T10:00:00Z",
     },
   ];
+}
+
+export async function fetchAHPCriteria(): Promise<AHPCriterion[]> {
+  const res = await fetch(`${BACKEND_API_URL}/ahp/criteria`, {
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Gagal memuat kriteria AHP aktif.");
+  }
+  return await res.json();
 }
 
 export async function createAHPVersion(
@@ -709,7 +774,12 @@ export interface CycleRankingItemResponse {
     dawn_crime_count?: number;
     boarding_house_count?: number;
     inspection_date?: string;
+    criteria_values?: Record<string, number>;
+    normalized_values?: Record<string, number>;
+    weighted_values?: Record<string, number>;
   };
+  normalized_values?: Record<string, number>;
+  weighted_values?: Record<string, number>;
   norm_c1: number | null;
   norm_c2: number | null;
   norm_c3: number | null;
@@ -730,6 +800,8 @@ export interface TOPSISCycleDetailResponse {
   executed_by: number;
   ahp_version_id: number;
   weights_snapshot: {
+    criteria?: AHPCriterion[];
+    weights?: Record<string, number>;
     w_light_damage?: number;
     w_dawn_crime?: number;
     w_boarding_density?: number;
@@ -745,7 +817,7 @@ export interface TOPSISCycleDetailResponse {
 
 export interface TOPSISCycleCreateRequest {
   cycle_name: string;
-  criteria_directions?: string[];
+  criteria_directions?: ("min" | "max")[];
 }
 
 export async function runTOPSISCycle(

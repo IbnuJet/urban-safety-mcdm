@@ -12,7 +12,7 @@ backend/
 ├── app/
 │   ├── api/v1/endpoints/     # 8 modul REST API (auth, users, segments, observations, ahp, topsis, map_view, worklists, history)
 │   ├── core/                 # Konfigurasi env, koneksi SQLAlchemy, keamanan JWT/bcrypt
-│   ├── models/               # 8 entitas tabel SQLAlchemy 2.0 (kompatibel PostgreSQL & SQLite)
+│   ├── models/               # Entitas tabel SQLAlchemy 2.0 (kompatibel PostgreSQL & SQLite)
 │   ├── schemas/              # Skema validasi request/response Pydantic v2 & GeoJSON
 │   ├── services/             # Engine AHP (NumPy), TOPSIS (NumPy), dan validator CSV (Pandas)
 │   ├── db_setup.py           # Utilitas verifikasi koneksi DB, init skema, seed, & cek row count
@@ -54,7 +54,7 @@ Atau langsung menyertakan parameter password:
 Skrip ini akan otomatis:
 1. Mengecek dan membuat database `dss_jatinangor` lewat `psql` jika belum ada.
 2. Membuat/memperbarui `backend/.env` dengan `DATABASE_URL="postgresql+psycopg://postgres:...@localhost:5432/dss_jatinangor"`.
-3. Menjalankan `python -m app.db_setup` untuk membuat 8 tabel, mengisi data seed awal, dan menampilkan jumlah baris tiap tabel.
+3. Menjalankan `python -m app.db_setup` untuk memastikan skema database tersedia, mengisi data seed awal, dan menampilkan jumlah baris tiap tabel.
 
 ---
 
@@ -96,7 +96,7 @@ Skrip ini akan otomatis:
    ```text
    [DB Setup] Target dialect : postgresql
    [DB Setup] Target URL     : postgresql+psycopg://postgres:***@localhost:5432/dss_jatinangor
-   [DB Setup] Skema 8 tabel berhasil dipastikan ada (init_db).
+   [DB Setup] Skema tabel berhasil dipastikan ada (init_db).
    [DB Setup] Seeder idempotent selesai dijalankan.
 
    [DB Setup] Ringkasan jumlah baris per tabel:
@@ -104,6 +104,8 @@ Skrip ini akan otomatis:
      - alley_segments           : 12
      - segment_observations     : 12
      - ahp_weight_versions      : 1
+     - ahp_version_criteria     : 3
+     - segment_criterion_values : 0
      - csv_import_batches       : 0
      - evaluation_cycles        : 0
      - cycle_ranking_results    : 0
@@ -124,7 +126,7 @@ Skrip ini akan otomatis:
    psql -U postgres -h localhost -d dss_jatinangor -c "SELECT segment_code, name, corridor FROM alley_segments ORDER BY id;"
    ```
 
-### Daftar 8 Tabel Database
+### Tabel Database Utama
 
 | Tabel | Fungsi |
 | :--- | :--- |
@@ -132,7 +134,9 @@ Skrip ini akan otomatis:
 | `alley_segments` | Master 12+ segmen gang Jatinangor + geometri GeoJSON batas segmen |
 | `segment_observations` | Data kondisi lapangan terkini tiap segmen (lampu mati, curanmor, indekos, tanggal inspeksi) |
 | `csv_import_batches` | Audit & preview staging import CSV sebelum konfirmasi |
-| `ahp_weight_versions` | Riwayat matriks Saaty, bobot $W_1, W_2, W_3$, Consistency Ratio ($CR \le 0.10$), & status aktif |
+| `ahp_weight_versions` | Riwayat matriks Saaty berukuran dinamis, bobot kriteria, Consistency Ratio ($CR \le 0.10$), & status aktif |
+| `ahp_version_criteria` | Definisi kriteria pada setiap versi AHP, termasuk nama, key, dan arah min/max |
+| `segment_criterion_values` | Nilai untuk kriteria tambahan pada setiap segmen |
 | `evaluation_cycles` | Riwayat eksekusi siklus TOPSIS beserta snapshot bobot |
 | `cycle_ranking_results` | Hasil normalisasi, matriks terbobot, $D^+$, $D^-$, skor preferensi $V_i$, peringkat, & alasan ineligibel |
 | `worklist_decisions` | Keputusan daftar kerja final, kuota kapasitas $K$, flag override, & audit alasan perubahan |
@@ -184,8 +188,8 @@ Seluruh 23 layar pada desain Figma telah dipetakan ke endpoint `/api/v1`:
 | `00 · Masuk` | Login dengan Email/Username + Kata sandi, info profil aktif | `POST /api/v1/auth/login`, `GET /api/v1/auth/me` |
 | `01 · Peta prioritas`, `01b · Filter koridor` | 4 kartu KPI (`summary`), layer GeoJSON peta prioritas, filter koridor, panel detail kalkulasi segmen | `GET /api/v1/map/priority-layer`, `GET /api/v1/map/segments/{segment_id}/detail` |
 | `02`, `02b · Tambah`, `02c · Edit segmen` | Tabel segmen (`has_geometry`, `last_inspection_date`), cari & filter koridor, tambah/ubah segmen GeoJSON | `GET /api/v1/segments`, `GET /api/v1/segments/{segment_id}`, `POST /api/v1/segments`, `PUT /api/v1/segments/{segment_id}` |
-| `03 · Pendataan`, `03b · Preview CSV`, `03c · Konfirmasi CSV` | Ringkasan validasi sidebar, unduh templat CSV, input form manual, unggah/pratinjau/ganti CSV, konfirmasi simpan batch | `GET /api/v1/observations/validation-summary`, `GET /api/v1/observations/csv-template`, `POST /api/v1/observations/form`, `POST /api/v1/observations/upload-csv`, `GET /api/v1/observations/batches/{batch_id}`, `DELETE /api/v1/observations/batches/{batch_id}`, `POST /api/v1/observations/batches/{batch_id}/confirm` |
-| `04 · Pembobotan AHP`, `04b · Simpan versi` | Kalkulasi pratinjau via `saaty_comparisons` (3 slider Saaty 1–9) atau `pairwise_matrix`, simpan versi & aktivasi ($CR \le 0.10$) | `POST /api/v1/ahp/calculate-preview`, `GET /api/v1/ahp/versions`, `POST /api/v1/ahp/versions`, `PATCH /api/v1/ahp/versions/{version_id}/activate` |
+| `03 · Pendataan`, `03b · Preview CSV`, `03c · Konfirmasi CSV` | Ringkasan validasi sidebar, templat CSV dengan kolom kriteria aktif, input nilai kriteria dinamis via form/CSV, pratinjau, dan konfirmasi simpan batch | `GET /api/v1/observations/validation-summary`, `GET /api/v1/observations/csv-template`, `POST /api/v1/observations/form`, `POST /api/v1/observations/upload-csv`, `GET /api/v1/observations/batches/{batch_id}`, `DELETE /api/v1/observations/batches/{batch_id}`, `POST /api/v1/observations/batches/{batch_id}/confirm` |
+| `04 · Pembobotan AHP`, `04b · Simpan versi` | Kelola 1–15 kriteria, isi matriks perbandingan berpasangan, kalkulasi pratinjau, simpan versi & aktivasi ($CR \le 0.10$) | `POST /api/v1/ahp/calculate-preview`, `GET /api/v1/ahp/versions`, `GET /api/v1/ahp/criteria`, `POST /api/v1/ahp/versions`, `PATCH /api/v1/ahp/versions/{version_id}/activate` |
 | `05 · Pemeringkatan TOPSIS` | Jalankan hitung ulang siklus TOPSIS, ambil siklus terbaru atau berdasarkan ID | `POST /api/v1/topsis/cycles`, `GET /api/v1/topsis/cycles/latest`, `GET /api/v1/topsis/cycles/{cycle_id}` |
 | `06 · Daftar kerja`, `06b · Override alasan` | Simulasi usulan kuota $K$ (usulan + cadangan), finalisasi daftar kerja + audit wajib alasan override ($\ge 10$ karakter) | `POST /api/v1/worklists/cycles/{cycle_id}/propose`, `POST /api/v1/worklists/cycles/{cycle_id}/finalize`, `GET /api/v1/worklists/cycles/{cycle_id}` |
 | `07 · Riwayat`, `07b · Detail`, `07c · Disesuaikan` | Daftar riwayat siklus, detail lengkap siklus + daftar segmen terpilih vs tergantikan, unduh CSV hasil | `GET /api/v1/history/cycles`, `GET /api/v1/history/cycles/{cycle_id}`, `GET /api/v1/history/cycles/{cycle_id}/export-csv` |

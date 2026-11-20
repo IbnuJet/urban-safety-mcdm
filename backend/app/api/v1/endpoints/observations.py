@@ -15,9 +15,12 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models.models import (
     AlleySegment,
+    AHPWeightVersion,
+    AHPVersionCriterion,
     BatchStatus,
     CSVImportBatch,
     DataSourceEnum,
+    SegmentCriterionValue,
     SegmentObservation,
     User,
     UserRole,
@@ -36,6 +39,71 @@ from app.schemas.schemas import (
 from app.services.csv_validator import validate_csv_observations
 
 router = APIRouter(prefix="/observations", tags=["Observations & CSV Import"])
+
+BUILTIN_CRITERION_KEYS = {
+    "broken_lights",
+    "dawn_crime_count",
+    "boarding_house_count",
+}
+
+
+def _active_custom_criteria(db: Session) -> set[str]:
+    version = db.scalar(
+        select(AHPWeightVersion)
+        .options(selectinload(AHPWeightVersion.criteria))
+        .where(AHPWeightVersion.is_active.is_(True))
+        .limit(1)
+    )
+    if version is None:
+        return set()
+    if version.criteria:
+        keys = {criterion.key for criterion in version.criteria}
+    elif len(version.pairwise_matrix) == 3:
+        keys = BUILTIN_CRITERION_KEYS
+    else:
+        keys = {f"criterion_{index + 1}" for index in range(len(version.pairwise_matrix))}
+    return keys - BUILTIN_CRITERION_KEYS
+
+
+def _validate_dynamic_values(
+    db: Session, values: dict[str, float]
+) -> None:
+    expected = _active_custom_criteria(db)
+    supplied = set(values)
+    if supplied != expected:
+        missing = sorted(expected - supplied)
+        unknown = sorted(supplied - expected)
+        details = []
+        if missing:
+            details.append(f"Nilai kriteria wajib diisi: {', '.join(missing)}.")
+        if unknown:
+            details.append(f"Key kriteria tidak dikenal: {', '.join(unknown)}.")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=" ".join(details),
+        )
+
+
+def _upsert_criterion_values(
+    db: Session, segment_id: int, values: dict[str, float]
+) -> None:
+    for key, value in values.items():
+        criterion_value = db.scalar(
+            select(SegmentCriterionValue).where(
+                SegmentCriterionValue.segment_id == segment_id,
+                SegmentCriterionValue.criterion_key == key,
+            )
+        )
+        if criterion_value is None:
+            db.add(
+                SegmentCriterionValue(
+                    segment_id=segment_id,
+                    criterion_key=key,
+                    value=value,
+                )
+            )
+        else:
+            criterion_value.value = value
 
 
 def _upsert_observation(
@@ -97,6 +165,7 @@ def submit_observation_form(
             detail="UNKNOWN_SEGMENT_CODE: Segmen gang tidak ditemukan.",
         )
 
+    _validate_dynamic_values(db, payload.criteria_values)
     warnings: list[str] = []
     age_days = (date.today() - payload.inspection_date).days
     if age_days > settings.INSPECTION_EXPIRY_DAYS:
@@ -119,11 +188,13 @@ def submit_observation_form(
         data_source=DataSourceEnum.MANUAL_FORM,
         updated_by=current_user.id,
     )
+    _upsert_criterion_values(db, segment.id, payload.criteria_values)
     db.commit()
     db.refresh(obs)
 
     return ObservationFormResponse(
         observation=ObservationBriefResponse.model_validate(obs),
+        criteria_values=payload.criteria_values,
         warnings=warnings,
     )
 
@@ -155,6 +226,7 @@ async def upload_csv_preview(
             known_segment_codes=known_codes,
             reference_date=date.today(),
             expiry_days=settings.INSPECTION_EXPIRY_DAYS,
+            criterion_keys=_active_custom_criteria(db),
         )
     except ValueError as exc:
         raise HTTPException(
@@ -219,6 +291,7 @@ def confirm_csv_batch(
         row_num = int(row["row_number"])
         if row_num in corrections_by_row:
             corr = corrections_by_row[row_num]
+            _validate_dynamic_values(db, corr.criteria_values)
             code = corr.segment_code.strip().upper()
             if code not in segment_map:
                 raise HTTPException(
@@ -251,6 +324,7 @@ def confirm_csv_batch(
                 "broken_lights": corr.broken_lights,
                 "dawn_crime_count": corr.dawn_crime_count,
                 "boarding_house_count": corr.boarding_house_count,
+                "criteria_values": corr.criteria_values,
                 "inspection_date": corr.inspection_date.isoformat(),
                 "status": row_status,
                 "issues": issues,
@@ -269,6 +343,7 @@ def confirm_csv_batch(
         if row_status == "WARNING" and not payload.include_warnings:
             skipped_error_count += 1
             continue
+        _validate_dynamic_values(db, candidate.get("criteria_values", {}))
 
         code = str(candidate["segment_code"]).strip().upper()
         if code in seen_codes:
@@ -300,6 +375,9 @@ def confirm_csv_batch(
             inspection_date=date.fromisoformat(str(item["inspection_date"])),
             data_source=DataSourceEnum.CSV_IMPORT,
             updated_by=current_user.id,
+        )
+        _upsert_criterion_values(
+            db, segment.id, candidate.get("criteria_values", {})
         )
         committed_codes.append(code)
 

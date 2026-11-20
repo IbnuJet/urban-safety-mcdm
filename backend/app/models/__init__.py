@@ -1,6 +1,7 @@
 """SQLAlchemy ORM models package."""
 
 from app.models.models import (
+    AHPVersionCriterion,
     AHPWeightVersion,
     AlleySegment,
     BatchStatus,
@@ -11,12 +12,14 @@ from app.models.models import (
     DataSourceEnum,
     EvaluationCycle,
     SegmentObservation,
+    SegmentCriterionValue,
     User,
     UserRole,
     WorklistDecision,
 )
 
 __all__ = [
+    "AHPVersionCriterion",
     "AHPWeightVersion",
     "AlleySegment",
     "BatchStatus",
@@ -27,6 +30,7 @@ __all__ = [
     "DataSourceEnum",
     "EvaluationCycle",
     "SegmentObservation",
+    "SegmentCriterionValue",
     "User",
     "UserRole",
     "WorklistDecision",

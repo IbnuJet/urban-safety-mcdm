@@ -1,6 +1,8 @@
 """Pydantic v2 schemas for all 8 DSS functional modules."""
 
 from datetime import date, datetime
+import math
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
@@ -190,6 +192,14 @@ class ObservationFormRequest(BaseModel):
     dawn_crime_count: int | None = Field(default=None, ge=0)
     boarding_house_count: int = Field(..., ge=0)
     inspection_date: date
+    criteria_values: dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("criteria_values")
+    @classmethod
+    def validate_criteria_values(cls, values: dict[str, float]) -> dict[str, float]:
+        if any(not math.isfinite(value) for value in values.values()):
+            raise ValueError("Nilai kriteria tambahan harus berupa angka finite.")
+        return values
 
     @model_validator(mode="after")
     def validate_business_rules(self) -> "ObservationFormRequest":
@@ -204,6 +214,7 @@ class ObservationFormRequest(BaseModel):
 
 class ObservationFormResponse(BaseModel):
     observation: ObservationBriefResponse
+    criteria_values: dict[str, float] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -220,6 +231,7 @@ class CSVValidatedRow(BaseModel):
     broken_lights: int | None = None
     dawn_crime_count: int | None = None
     boarding_house_count: int | None = None
+    criteria_values: dict[str, float | None] = Field(default_factory=dict)
     inspection_date: str | None = None
     status: Literal["VALID", "WARNING", "ERROR"]
     issues: list[CSVValidationIssue] = Field(default_factory=list)
@@ -246,6 +258,14 @@ class CSVRowCorrection(BaseModel):
     dawn_crime_count: int | None = Field(default=None, ge=0)
     boarding_house_count: int = Field(..., ge=0)
     inspection_date: date
+    criteria_values: dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("criteria_values")
+    @classmethod
+    def validate_criteria_values(cls, values: dict[str, float]) -> dict[str, float]:
+        if any(not math.isfinite(value) for value in values.values()):
+            raise ValueError("Nilai kriteria tambahan harus berupa angka finite.")
+        return values
 
     @model_validator(mode="after")
     def check_lights(self) -> "CSVRowCorrection":
@@ -272,8 +292,34 @@ class CSVConfirmResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class AHPCriterionDefinition(BaseModel):
+    key: str = Field(..., min_length=1, max_length=80)
+    name: str = Field(..., min_length=1, max_length=150)
+    direction: Literal["max", "min"] = "max"
+
+    @field_validator("key")
+    @classmethod
+    def validate_key(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", normalized):
+            raise ValueError("Key kriteria hanya boleh berisi huruf kecil, angka, dan underscore.")
+        return normalized
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Nama kriteria tidak boleh kosong.")
+        return normalized
+
+
+class AHPCriterionWeight(AHPCriterionDefinition):
+    weight: float
+
+
 class AHPSaatyComparisons(BaseModel):
-    """Perbandingan berpasangan skala Saaty (1-9 atau resiprokal) untuk 3 kriteria."""
+    """Perbandingan berpasangan skala Saaty untuk tiga kriteria bawaan."""
 
     c1_vs_c2: float = Field(
         ..., gt=0, description="Proporsi lampu mati (C1) dibanding Curanmor dini hari (C2)"
@@ -296,38 +342,71 @@ class AHPSaatyComparisons(BaseModel):
 class AHPCalculateRequest(BaseModel):
     pairwise_matrix: list[list[float]] | None = Field(
         default=None,
-        description="Matriks perbandingan berpasangan 3x3 untuk [C1: Kerusakan Lampu, C2: Curanmor Dini Hari, C3: Kepadatan Indekos].",
+        description="Matriks perbandingan berpasangan persegi berukuran N×N.",
     )
     saaty_comparisons: AHPSaatyComparisons | None = Field(
         default=None,
-        description="Alternatif input 3 perbandingan skala Saaty dari UI slider/dropdown.",
+        description="Alternatif input untuk tiga perbandingan kriteria bawaan.",
     )
+    criteria: list[AHPCriterionDefinition] | None = None
 
     @field_validator("pairwise_matrix")
     @classmethod
     def validate_matrix_shape(
         cls, matrix: list[list[float]] | None
     ) -> list[list[float]] | None:
-        if matrix is not None and (len(matrix) != 3 or any(len(row) != 3 for row in matrix)):
-            raise ValueError("pairwise_matrix wajib berukuran 3x3.")
+        if matrix is not None and (
+            not matrix or any(len(row) != len(matrix) for row in matrix)
+        ):
+            raise ValueError("pairwise_matrix wajib berbentuk persegi N×N dan tidak boleh kosong.")
         return matrix
 
     @model_validator(mode="after")
     def resolve_matrix(self) -> "AHPCalculateRequest":
         if self.pairwise_matrix is None and self.saaty_comparisons is None:
             raise ValueError(
-                "Harap sertakan pairwise_matrix (3x3) atau saaty_comparisons."
+                "Harap sertakan pairwise_matrix N×N atau saaty_comparisons."
             )
         if self.pairwise_matrix is None and self.saaty_comparisons is not None:
             self.pairwise_matrix = self.saaty_comparisons.to_matrix()
+        assert self.pairwise_matrix is not None
+        if self.criteria is None:
+            if len(self.pairwise_matrix) == 3:
+                self.criteria = [
+                    AHPCriterionDefinition(
+                        key="broken_lights", name="Kerusakan Lampu PJU"
+                    ),
+                    AHPCriterionDefinition(
+                        key="dawn_crime_count", name="Curanmor Dini Hari"
+                    ),
+                    AHPCriterionDefinition(
+                        key="boarding_house_count", name="Kepadatan Indekos"
+                    ),
+                ]
+            else:
+                self.criteria = [
+                    AHPCriterionDefinition(
+                        key=f"criterion_{index + 1}",
+                        name=f"Kriteria {index + 1}",
+                    )
+                    for index in range(len(self.pairwise_matrix))
+                ]
+        if len(self.criteria) != len(self.pairwise_matrix):
+            raise ValueError("Jumlah kriteria harus sama dengan ukuran pairwise_matrix.")
+        if len({criterion.key for criterion in self.criteria}) != len(self.criteria):
+            raise ValueError("Key kriteria tidak boleh duplikat.")
+        if len({criterion.name.casefold() for criterion in self.criteria}) != len(self.criteria):
+            raise ValueError("Nama kriteria tidak boleh duplikat.")
         return self
 
 
 class AHPCalculateResponse(BaseModel):
     pairwise_matrix: list[list[float]]
-    w_light_damage: float
-    w_dawn_crime: float
-    w_boarding_density: float
+    criteria: list[AHPCriterionWeight]
+    weights: list[float]
+    w_light_damage: float | None = None
+    w_dawn_crime: float | None = None
+    w_boarding_density: float | None = None
     lambda_max: float
     ci: float
     ri: float
@@ -347,9 +426,11 @@ class AHPVersionResponse(BaseModel):
     version_name: str
     created_by: int
     pairwise_matrix: list[list[float]]
-    w_light_damage: float
-    w_dawn_crime: float
-    w_boarding_density: float
+    criteria: list[AHPCriterionWeight] = Field(default_factory=list)
+    weights: list[float] = Field(default_factory=list)
+    w_light_damage: float | None = None
+    w_dawn_crime: float | None = None
+    w_boarding_density: float | None = None
     lambda_max: float
     ci: float
     ri: float
@@ -366,9 +447,7 @@ class AHPVersionResponse(BaseModel):
 
 class TOPSISCycleCreateRequest(BaseModel):
     cycle_name: str = Field(..., min_length=2, max_length=200)
-    criteria_directions: tuple[
-        Literal["max", "min"], Literal["max", "min"], Literal["max", "min"]
-    ] = ("max", "max", "max")
+    criteria_directions: list[Literal["max", "min"]] | None = None
 
 
 class CycleRankingItemResponse(BaseModel):
@@ -382,6 +461,8 @@ class CycleRankingItemResponse(BaseModel):
     is_eligible: bool
     ineligible_reason: str | None
     snapshot_data: dict[str, Any]
+    normalized_values: dict[str, float] = Field(default_factory=dict)
+    weighted_values: dict[str, float] = Field(default_factory=dict)
     norm_c1: float | None
     norm_c2: float | None
     norm_c3: float | None

@@ -272,6 +272,7 @@ export default function PemeringkatanPage() {
   const [cycleNameInput, setCycleNameInput] = useState("Siklus Evaluasi Q4 2026");
   const [isExecuting, setIsExecuting] = useState(false);
   const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
+  const [actionErrorMsg, setActionErrorMsg] = useState<string | null>(null);
 
   // Load latest cycle
   async function loadLatestCycle() {
@@ -304,32 +305,42 @@ export default function PemeringkatanPage() {
     });
   }, [cycleDetail.eligible_results, searchTerm, selectedCorridor, selectedPriority]);
 
+  const defaultCriteria = [
+    { key: "broken_lights", name: "Kerusakan Lampu PJU", direction: "max" as const },
+    { key: "dawn_crime_count", name: "Curanmor Dini Hari", direction: "max" as const },
+    { key: "boarding_house_count", name: "Kepadatan Indekos", direction: "max" as const },
+  ];
+  const displayedCriteria =
+    cycleDetail.weights_snapshot.criteria ??
+    defaultCriteria.map((criterion) => ({
+      ...criterion,
+      weight:
+        cycleDetail.weights_snapshot.weights?.[criterion.key] ??
+        (criterion.key === "broken_lights"
+          ? cycleDetail.weights_snapshot.w_light_damage
+          : criterion.key === "dawn_crime_count"
+          ? cycleDetail.weights_snapshot.w_dawn_crime
+          : cycleDetail.weights_snapshot.w_boarding_density) ??
+        0,
+    }));
+
   // Handle Run New TOPSIS Cycle
   async function handleRunNewCycle(e: React.FormEvent) {
     e.preventDefault();
     setIsExecuting(true);
     setActionSuccessMsg(null);
+    setActionErrorMsg(null);
     try {
       const result = await runTOPSISCycle({
         cycle_name: cycleNameInput,
-        criteria_directions: ["max", "max", "max"],
       });
       setCycleDetail(result);
       setActionSuccessMsg(`Siklus "${cycleNameInput}" berhasil dijalankan!`);
       setShowNewCycleModal(false);
-    } catch (err: any) {
-      // Local simulation
-      const simulated: TOPSISCycleDetailResponse = {
-        ...MOCK_CYCLE_DETAIL,
-        cycle_id: Date.now(),
-        cycle_name: cycleNameInput,
-        created_at: new Date().toISOString(),
-      };
-      setCycleDetail(simulated);
-      setActionSuccessMsg(
-        `Siklus "${cycleNameInput}" berhasil dieksekusi (simulasi TOPSIS)!`
+    } catch (error) {
+      setActionErrorMsg(
+        error instanceof Error ? error.message : "Gagal menjalankan TOPSIS."
       );
-      setShowNewCycleModal(false);
     } finally {
       setIsExecuting(false);
       setTimeout(() => setActionSuccessMsg(null), 4000);
@@ -382,6 +393,11 @@ export default function PemeringkatanPage() {
           <span>{actionSuccessMsg}</span>
         </div>
       )}
+      {actionErrorMsg && (
+        <div role="alert" className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-700">
+          {actionErrorMsg}
+        </div>
+      )}
 
       {/* Ringkasan Parameter Siklus Aktif */}
       <div className="bg-white rounded-2xl border border-zinc-200/80 p-5 mb-6 shadow-2xs">
@@ -416,26 +432,17 @@ export default function PemeringkatanPage() {
           </div>
         </div>
 
-        {/* 3 Kriteria Bobot Snapshot */}
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 pt-4 text-xs">
-          <div className="p-3 rounded-xl bg-zinc-50 border border-zinc-100">
-            <span className="text-[11px] text-zinc-400 block mb-0.5">Bobot Kerusakan Lampu (C1)</span>
-            <span className="text-sm font-bold text-zinc-900 font-mono">
-              {((cycleDetail.weights_snapshot?.w_light_damage || 0.5571) * 100).toFixed(1)}%
-            </span>
-          </div>
-          <div className="p-3 rounded-xl bg-zinc-50 border border-zinc-100">
-            <span className="text-[11px] text-zinc-400 block mb-0.5">Bobot Curanmor Dini Hari (C2)</span>
-            <span className="text-sm font-bold text-zinc-900 font-mono">
-              {((cycleDetail.weights_snapshot?.w_dawn_crime || 0.3202) * 100).toFixed(1)}%
-            </span>
-          </div>
-          <div className="p-3 rounded-xl bg-zinc-50 border border-zinc-100">
-            <span className="text-[11px] text-zinc-400 block mb-0.5">Bobot Kepadatan Kos (C3)</span>
-            <span className="text-sm font-bold text-zinc-900 font-mono">
-              {((cycleDetail.weights_snapshot?.w_boarding_density || 0.1226) * 100).toFixed(1)}%
-            </span>
-          </div>
+        <div className="grid grid-cols-1 gap-3 pt-4 text-xs sm:grid-cols-2 xl:grid-cols-4">
+          {displayedCriteria.map((criterion) => (
+            <div key={criterion.key} className="rounded-xl border border-zinc-100 bg-zinc-50 p-3">
+              <span className="mb-0.5 block text-[11px] text-zinc-400">
+                Bobot {criterion.name}
+              </span>
+              <span className="font-mono text-sm font-bold text-zinc-900">
+                {((criterion.weight ?? 0) * 100).toFixed(1)}%
+              </span>
+            </div>
+          ))}
           <div className="p-3 rounded-xl bg-emerald-50/60 border border-emerald-100">
             <span className="text-[11px] text-emerald-700 block mb-0.5">Total Segmen Teruji</span>
             <span className="text-sm font-bold text-emerald-900">
@@ -551,7 +558,7 @@ export default function PemeringkatanPage() {
                     <th className="py-3 px-4 text-center">Indikator Lapangan</th>
                     {showMatrixDetails && (
                       <>
-                        <th className="py-3 px-4 text-center">Normalisasi Terbobot (v1,v2,v3)</th>
+                        <th className="py-3 px-4 text-center">Nilai Terbobot per Kriteria</th>
                         <th className="py-3 px-4 text-center">Jarak D+ / D-</th>
                       </>
                     )}
@@ -631,15 +638,29 @@ export default function PemeringkatanPage() {
                               <span className="font-medium text-zinc-800">
                                 {snap.broken_lights}/{snap.total_lights} lampu rusak
                               </span>
-                              <span className="text-zinc-400">
-                                {snap.dawn_crime_count} curanmor | {snap.boarding_house_count} kos
-                              </span>
+                              {displayedCriteria.map((criterion) => {
+                                const builtinValues: Record<string, number | undefined> = {
+                                  broken_lights: snap.broken_lights,
+                                  dawn_crime_count: snap.dawn_crime_count,
+                                  boarding_house_count: snap.boarding_house_count,
+                                };
+                                const value =
+                                  snap.criteria_values?.[criterion.key] ??
+                                  builtinValues[criterion.key];
+                                return (
+                                  <span key={criterion.key} className="text-zinc-400">
+                                    {criterion.name}: {value ?? "—"}
+                                  </span>
+                                );
+                              })}
                             </div>
                           </td>
                           {showMatrixDetails && (
                             <>
                               <td className="py-3.5 px-4 text-center font-mono text-[11px] text-zinc-600">
-                                {item.weighted_c1?.toFixed(3)}, {item.weighted_c2?.toFixed(3)}, {item.weighted_c3?.toFixed(3)}
+                                {Object.entries(item.weighted_values ?? {})
+                                  .map(([key, value]) => `${key}: ${value.toFixed(3)}`)
+                                  .join(", ") || "—"}
                               </td>
                               <td className="py-3.5 px-4 text-center font-mono text-[11px]">
                                 <span className="text-emerald-700">D+: {item.d_plus?.toFixed(3)}</span>
@@ -778,7 +799,7 @@ export default function PemeringkatanPage() {
               <div className="p-3 rounded-xl bg-zinc-50 border border-zinc-200 text-xs text-zinc-600 space-y-1">
                 <p className="font-semibold text-zinc-800">Ketentuan Perhitungan TOPSIS:</p>
                 <p>• Menggunakan versi bobot AHP yang saat ini berstatus aktif.</p>
-                <p>• Seluruh 3 kriteria (Kerusakan Lampu, Curanmor Dini Hari, Kepadatan Kos) bernilai benefit (makin besar makin prioritas diperbaiki).</p>
+                <p>• Bobot dan arah benefit/cost mengikuti konfigurasi kriteria pada versi AHP aktif.</p>
                 <p>• Segmen gang dengan inspeksi &gt; 90 hari akan otomatis didiskualifikasi.</p>
               </div>
 

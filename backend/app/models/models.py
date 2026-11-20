@@ -17,6 +17,7 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -210,6 +211,53 @@ class AHPWeightVersion(Base):
     )
 
     creator: Mapped["User"] = relationship("User")
+    criteria: Mapped[list["AHPVersionCriterion"]] = relationship(
+        "AHPVersionCriterion",
+        back_populates="version",
+        cascade="all, delete-orphan",
+        order_by="AHPVersionCriterion.position",
+    )
+
+
+class AHPVersionCriterion(Base):
+    """Criterion definition and weight captured with one AHP version."""
+
+    __tablename__ = "ahp_version_criteria"
+    __table_args__ = (
+        UniqueConstraint("ahp_version_id", "key", name="uq_ahp_version_criterion_key"),
+        UniqueConstraint("ahp_version_id", "position", name="uq_ahp_version_criterion_position"),
+        CheckConstraint("direction IN ('max', 'min')", name="ck_ahp_criterion_direction"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ahp_version_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ahp_weight_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(String(80), nullable=False)
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    direction: Mapped[str] = mapped_column(String(3), nullable=False)
+    weight: Mapped[float] = mapped_column(Float, nullable=False)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    version: Mapped["AHPWeightVersion"] = relationship(
+        "AHPWeightVersion", back_populates="criteria"
+    )
+
+
+class SegmentCriterionValue(Base):
+    """Numeric observation value for a configurable criterion and segment."""
+
+    __tablename__ = "segment_criterion_values"
+    __table_args__ = (
+        UniqueConstraint("segment_id", "criterion_key", name="uq_segment_criterion_value"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    segment_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("alley_segments.id", ondelete="CASCADE"), nullable=False
+    )
+    criterion_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
 
 
 class EvaluationCycle(Base):

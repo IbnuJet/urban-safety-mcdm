@@ -1,7 +1,7 @@
 """TOPSIS ranking engine and segment eligibility rules using NumPy."""
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Sequence
 
@@ -19,6 +19,7 @@ class TOPSISInputItem:
     broken_lights: int
     dawn_crime_count: int
     boarding_house_count: int
+    criteria_values: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -30,12 +31,14 @@ class TOPSISRankedItem:
     broken_lights: int
     dawn_crime_count: int
     boarding_house_count: int
-    norm_c1: float
-    norm_c2: float
-    norm_c3: float
-    weighted_c1: float
-    weighted_c2: float
-    weighted_c3: float
+    norm_c1: float | None
+    norm_c2: float | None
+    norm_c3: float | None
+    weighted_c1: float | None
+    weighted_c2: float | None
+    weighted_c3: float | None
+    normalized_values: dict[str, float]
+    weighted_values: dict[str, float]
     d_plus: float
     d_minus: float
     preference_score: float
@@ -48,6 +51,8 @@ def evaluate_segment_eligibility(
     observation: SegmentObservation | None,
     reference_date: date,
     expiry_days: int,
+    criteria_keys: Sequence[str] | None = None,
+    criteria_values: dict[str, float] | None = None,
 ) -> tuple[bool, str | None]:
     """Evaluate whether a segment is eligible to enter the TOPSIS decision matrix."""
     if not segment.is_active:
@@ -60,10 +65,24 @@ def evaluate_segment_eligibility(
             False,
             f"Data observasi kedaluwarsa ({age_days} hari > batas {expiry_days} hari).",
         )
-    if observation.dawn_crime_count is None:
-        return False, "Data rekap curanmor dini hari belum lengkap (null)."
-    if observation.broken_lights <= 0:
-        return False, "Tidak ada lampu PJU mati (0 kerusakan)"
+    if criteria_keys is None:
+        if observation.dawn_crime_count is None:
+            return False, "Data rekap curanmor dini hari belum lengkap (null)."
+        if observation.broken_lights <= 0:
+            return False, "Tidak ada lampu PJU mati (0 kerusakan)"
+    else:
+        legacy_values = {
+            "broken_lights": observation.broken_lights,
+            "dawn_crime_count": observation.dawn_crime_count,
+            "boarding_house_count": observation.boarding_house_count,
+        }
+        values = criteria_values or {}
+        for key in criteria_keys:
+            value = legacy_values.get(key, values.get(key))
+            if value is None:
+                return False, f"Nilai kriteria '{key}' belum tersedia."
+            if key == "broken_lights" and value <= 0:
+                return False, "Tidak ada lampu PJU mati (0 kerusakan)"
     return True, None
 
 
@@ -82,42 +101,56 @@ def get_priority_category(
 
 def calculate_topsis(
     items: Sequence[TOPSISInputItem],
-    weights: tuple[float, float, float],
-    criteria_directions: tuple[
-        Literal["max", "min"], Literal["max", "min"], Literal["max", "min"]
-    ] = ("max", "max", "max"),
+    weights: Sequence[float],
+    criteria_directions: Sequence[Literal["max", "min"]] | None = None,
+    criterion_keys: Sequence[str] | None = None,
 ) -> list[TOPSISRankedItem]:
-    """Run explicit NumPy TOPSIS ranking with edge-case handling and deterministic tie-breaking.
-
-    Criteria columns:
-    - C1: broken_lights
-    - C2: dawn_crime_count
-    - C3: boarding_house_count
-    """
+    """Run NumPy TOPSIS over a dynamic number of criteria."""
     m = len(items)
     if m == 0:
         return []
 
     w = np.asarray(weights, dtype=np.float64)
-    if w.shape != (3,) or np.any(w < 0.0) or float(np.sum(w)) <= 0.0:
-        raise ValueError("Vektor bobot TOPSIS harus terdiri dari 3 nilai non-negatif dengan jumlah > 0.")
+    n = len(w)
+    if n < 1 or not np.all(np.isfinite(w)) or np.any(w < 0.0) or float(np.sum(w)) <= 0.0:
+        raise ValueError("Vektor bobot TOPSIS harus berisi nilai finite non-negatif dengan jumlah > 0.")
 
-    X = np.array(
-        [
-            [
-                float(item.broken_lights),
-                float(item.dawn_crime_count),
-                float(item.boarding_house_count),
-            ]
-            for item in items
-        ],
-        dtype=np.float64,
+    default_values = {
+        "broken_lights": lambda item: item.broken_lights,
+        "dawn_crime_count": lambda item: item.dawn_crime_count,
+        "boarding_house_count": lambda item: item.boarding_house_count,
+    }
+    keys = list(criterion_keys) if criterion_keys is not None else (
+        ["broken_lights", "dawn_crime_count", "boarding_house_count"]
+        if n == 3
+        else [f"criterion_{index + 1}" for index in range(n)]
     )
+    directions = list(criteria_directions) if criteria_directions is not None else ["max"] * n
+    if len(keys) != n or len(set(keys)) != n:
+        raise ValueError("Jumlah key kriteria harus sama dengan jumlah bobot dan tidak boleh duplikat.")
+    if len(directions) != n or any(direction not in {"max", "min"} for direction in directions):
+        raise ValueError("Arah setiap kriteria TOPSIS harus berupa 'max' atau 'min'.")
+
+    values_by_item: list[list[float]] = []
+    for item in items:
+        values: list[float] = []
+        for key in keys:
+            if key in item.criteria_values:
+                value = item.criteria_values[key]
+            elif key in default_values:
+                value = default_values[key](item)
+            else:
+                raise ValueError(f"Nilai untuk kriteria '{key}' tidak tersedia.")
+            if not np.isfinite(value):
+                raise ValueError(f"Nilai untuk kriteria '{key}' harus finite.")
+            values.append(float(value))
+        values_by_item.append(values)
+    X = np.asarray(values_by_item, dtype=np.float64)
 
     # 1. Euclidean vector normalization (safe against zero-norm columns)
     col_norms = np.sqrt(np.sum(X**2, axis=0))
     R = np.zeros_like(X, dtype=np.float64)
-    for j in range(3):
+    for j in range(n):
         if col_norms[j] > 0.0:
             R[:, j] = X[:, j] / col_norms[j]
         else:
@@ -129,6 +162,12 @@ def calculate_topsis(
     # Edge case: single eligible segment
     if m == 1:
         item = items[0]
+        normalized_values = {
+            key: float(R[0, index]) for index, key in enumerate(keys)
+        }
+        weighted_values = {
+            key: float(V[0, index]) for index, key in enumerate(keys)
+        }
         return [
             TOPSISRankedItem(
                 segment_id=item.segment_id,
@@ -136,12 +175,14 @@ def calculate_topsis(
                 broken_lights=item.broken_lights,
                 dawn_crime_count=item.dawn_crime_count,
                 boarding_house_count=item.boarding_house_count,
-                norm_c1=float(R[0, 0]),
-                norm_c2=float(R[0, 1]),
-                norm_c3=float(R[0, 2]),
-                weighted_c1=float(V[0, 0]),
-                weighted_c2=float(V[0, 1]),
-                weighted_c3=float(V[0, 2]),
+                norm_c1=normalized_values.get("broken_lights"),
+                norm_c2=normalized_values.get("dawn_crime_count"),
+                norm_c3=normalized_values.get("boarding_house_count"),
+                weighted_c1=weighted_values.get("broken_lights"),
+                weighted_c2=weighted_values.get("dawn_crime_count"),
+                weighted_c3=weighted_values.get("boarding_house_count"),
+                normalized_values=normalized_values,
+                weighted_values=weighted_values,
                 d_plus=0.0,
                 d_minus=0.0,
                 preference_score=1.0,
@@ -151,10 +192,10 @@ def calculate_topsis(
         ]
 
     # 3. Ideal positive (A+) and negative (A-) solutions
-    a_plus = np.zeros(3, dtype=np.float64)
-    a_minus = np.zeros(3, dtype=np.float64)
-    for j in range(3):
-        if criteria_directions[j] == "max":
+    a_plus = np.zeros(n, dtype=np.float64)
+    a_minus = np.zeros(n, dtype=np.float64)
+    for j in range(n):
+        if directions[j] == "max":
             a_plus[j] = float(np.max(V[:, j]))
             a_minus[j] = float(np.min(V[:, j]))
         else:
@@ -180,6 +221,7 @@ def calculate_topsis(
                 "item": item,
                 "norm": R[idx],
                 "weighted": V[idx],
+                "values": X[idx],
                 "d_plus": float(d_plus[idx]),
                 "d_minus": float(d_minus[idx]),
                 "score": score_val,
@@ -188,12 +230,20 @@ def calculate_topsis(
         )
 
     # 6. Deterministic tie-breaker sorting
+    tie_break_keys = (
+        ["dawn_crime_count", "broken_lights", "boarding_house_count"]
+        if criterion_keys is None and n == 3
+        else keys
+    )
+    key_indexes = {key: index for index, key in enumerate(keys)}
     preliminary.sort(
         key=lambda row: (
             -round(row["score"], 6),
-            -row["item"].dawn_crime_count,
-            -row["item"].broken_lights,
-            -row["item"].boarding_house_count,
+            *(
+                -float(row["values"][key_indexes[key]])
+                for key in tie_break_keys
+                if key in key_indexes
+            ),
             row["item"].segment_code,
         )
     )
@@ -201,6 +251,12 @@ def calculate_topsis(
     ranked_results: list[TOPSISRankedItem] = []
     for rank_idx, row in enumerate(preliminary, start=1):
         item = row["item"]
+        normalized_values = {
+            key: float(row["norm"][index]) for index, key in enumerate(keys)
+        }
+        weighted_values = {
+            key: float(row["weighted"][index]) for index, key in enumerate(keys)
+        }
         ranked_results.append(
             TOPSISRankedItem(
                 segment_id=item.segment_id,
@@ -208,12 +264,14 @@ def calculate_topsis(
                 broken_lights=item.broken_lights,
                 dawn_crime_count=item.dawn_crime_count,
                 boarding_house_count=item.boarding_house_count,
-                norm_c1=float(row["norm"][0]),
-                norm_c2=float(row["norm"][1]),
-                norm_c3=float(row["norm"][2]),
-                weighted_c1=float(row["weighted"][0]),
-                weighted_c2=float(row["weighted"][1]),
-                weighted_c3=float(row["weighted"][2]),
+                norm_c1=normalized_values.get("broken_lights"),
+                norm_c2=normalized_values.get("dawn_crime_count"),
+                norm_c3=normalized_values.get("boarding_house_count"),
+                weighted_c1=weighted_values.get("broken_lights"),
+                weighted_c2=weighted_values.get("dawn_crime_count"),
+                weighted_c3=weighted_values.get("boarding_house_count"),
+                normalized_values=normalized_values,
+                weighted_values=weighted_values,
                 d_plus=row["d_plus"],
                 d_minus=row["d_minus"],
                 preference_score=row["score"],

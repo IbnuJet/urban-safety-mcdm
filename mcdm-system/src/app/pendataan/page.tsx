@@ -4,6 +4,8 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import {
   fetchSegments,
+  fetchAHPCriteria,
+  AHPCriterion,
   submitObservationForm,
   uploadCSVObservation,
   confirmCSVBatch,
@@ -16,6 +18,7 @@ import {
 export default function PendataanPage() {
   const [activeTab, setActiveTab] = useState<"manual" | "csv">("manual");
   const [segments, setSegments] = useState<SegmentResponse[]>([]);
+  const [criteria, setCriteria] = useState<AHPCriterion[]>([]);
 
   // Manual Form State
   const [selectedSegmentCode, setSelectedSegmentCode] = useState("");
@@ -23,11 +26,16 @@ export default function PendataanPage() {
   const [brokenLights, setBrokenLights] = useState<number | "">(4);
   const [crimeCount, setCrimeCount] = useState<number | "">(3);
   const [boardingCount, setBoardingCount] = useState<number | "">(15);
-  const [inspectionDate, setInspectionDate] = useState<string>("2026-11-15");
+  const [inspectionDate, setInspectionDate] = useState<string>(
+    () => new Date().toISOString().split("T")[0]
+  );
   const [manualSubmitting, setManualSubmitting] = useState(false);
   const [manualSuccessMsg, setManualSuccessMsg] = useState<string | null>(null);
   const [manualErrorMsg, setManualErrorMsg] = useState<string | null>(null);
   const [manualWarnings, setManualWarnings] = useState<string[]>([]);
+  const [manualCriteriaValues, setManualCriteriaValues] = useState<
+    Record<string, number | "">
+  >({});
 
   // CSV Import State
   const [csvFile, setCsvFile] = useState<File | null>(null);
@@ -44,22 +52,43 @@ export default function PendataanPage() {
   const [editBrokenLights, setEditBrokenLights] = useState<number | "">(0);
   const [editCrime, setEditCrime] = useState<number | "">(0);
   const [editBoarding, setEditBoarding] = useState<number | "">(0);
-  const [editDate, setEditDate] = useState<string>("2026-11-15");
+  const [editDate, setEditDate] = useState<string>(
+    () => new Date().toISOString().split("T")[0]
+  );
+  const [editCriteriaValues, setEditCriteriaValues] = useState<
+    Record<string, number | "">
+  >({});
   const [corrections, setCorrections] = useState<CSVRowCorrection[]>([]);
 
   useEffect(() => {
-    // Set current date safely inside client effect
-    setInspectionDate(new Date().toISOString().split("T")[0]);
-    setEditDate(new Date().toISOString().split("T")[0]);
-
-    async function load() {
-      const data = await fetchSegments();
-      setSegments(data);
-      if (data.length > 0) {
-        setSelectedSegmentCode(data[0].segment_code);
-      }
-    }
-    load();
+    let active = true;
+    Promise.all([fetchSegments(), fetchAHPCriteria()])
+      .then(([data, activeCriteria]) => {
+        if (!active) return;
+        setSegments(data);
+        setCriteria(
+          activeCriteria.filter(
+            (criterion) =>
+              ![
+                "broken_lights",
+                "dawn_crime_count",
+                "boarding_house_count",
+              ].includes(criterion.key)
+          )
+        );
+        if (data.length > 0) {
+          setSelectedSegmentCode(data[0].segment_code);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setManualErrorMsg(
+          error instanceof Error ? error.message : "Gagal memuat data formulir."
+        );
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   // Submit Manual Observation
@@ -73,6 +102,15 @@ export default function PendataanPage() {
     const numBroken = brokenLights === "" ? 0 : Number(brokenLights);
     const numCrime = crimeCount === "" ? 0 : Number(crimeCount);
     const numBoarding = boardingCount === "" ? 0 : Number(boardingCount);
+    const criteriaValues: Record<string, number> = {};
+    for (const criterion of criteria) {
+      const value = manualCriteriaValues[criterion.key];
+      if (value === undefined || value === "") {
+        setManualErrorMsg(`Nilai kriteria "${criterion.name}" wajib diisi.`);
+        return;
+      }
+      criteriaValues[criterion.key] = Number(value);
+    }
 
     if (numBroken > numTotal) {
       setManualErrorMsg(
@@ -90,6 +128,7 @@ export default function PendataanPage() {
         dawn_crime_count: numCrime,
         boarding_house_count: numBoarding,
         inspection_date: inspectionDate,
+        criteria_values: criteriaValues,
       });
 
       setManualSuccessMsg(
@@ -98,19 +137,10 @@ export default function PendataanPage() {
       if (res.warnings && res.warnings.length > 0) {
         setManualWarnings(res.warnings);
       }
-    } catch (err: any) {
-      // In local mode without backend, simulate success
-      setManualSuccessMsg(
-        `Data observasi segmen ${selectedSegmentCode} tersimpan (simulasi lokal).`
+    } catch (error) {
+      setManualErrorMsg(
+        error instanceof Error ? error.message : "Gagal menyimpan observasi."
       );
-      const daysDiff = Math.floor(
-        (Date.now() - new Date(inspectionDate).getTime()) / (1000 * 60 * 60 * 24)
-      );
-      if (daysDiff > 90) {
-        setManualWarnings([
-          `Peringatan: Inspeksi berumur ${daysDiff} hari (> 90 hari batas kedaluwarsa). Data ini akan ditandai pada saat pemeringkatan TOPSIS.`,
-        ]);
-      }
     } finally {
       setManualSubmitting(false);
     }
@@ -146,6 +176,7 @@ export default function PendataanPage() {
         return;
       }
 
+      const headers = lines[0].split(",").map((header) => header.trim());
       const rows: CSVValidatedRow[] = [];
       let validCount = 0;
       let warningCount = 0;
@@ -159,6 +190,16 @@ export default function PendataanPage() {
         const crime = parseInt(parts[3]) || 0;
         const boarding = parseInt(parts[4]) || 0;
         const dateStr = parts[5] || "2026-11-01";
+        const criteriaValues = Object.fromEntries(
+          criteria.map((criterion) => {
+            const columnIndex = headers.indexOf(criterion.key);
+            const rawValue = columnIndex >= 0 ? parts[columnIndex] : "";
+            return [
+              criterion.key,
+              rawValue === "" ? null : Number(rawValue),
+            ];
+          })
+        );
 
         const issues = [];
         let status: "VALID" | "WARNING" | "ERROR" = "VALID";
@@ -170,6 +211,19 @@ export default function PendataanPage() {
             severity: "ERROR" as const,
             message: "Lampu rusak melebihi total lampu",
           });
+        }
+        for (const criterion of criteria) {
+          if (
+            criteriaValues[criterion.key] === null ||
+            !Number.isFinite(criteriaValues[criterion.key])
+          ) {
+            status = "ERROR";
+            issues.push({
+              code: "INVALID_CRITERION_VALUE",
+              severity: "ERROR" as const,
+              message: `Nilai kriteria ${criterion.name} wajib berupa angka.`,
+            });
+          }
         }
 
         const daysOld = Math.floor(
@@ -195,6 +249,7 @@ export default function PendataanPage() {
           broken_lights: broken,
           dawn_crime_count: crime,
           boarding_house_count: boarding,
+          criteria_values: criteriaValues,
           inspection_date: dateStr,
           status,
           issues,
@@ -225,6 +280,14 @@ export default function PendataanPage() {
     setEditCrime(row.dawn_crime_count || 0);
     setEditBoarding(row.boarding_house_count || 0);
     setEditDate(row.inspection_date || new Date().toISOString().split("T")[0]);
+    setEditCriteriaValues(
+      Object.fromEntries(
+        criteria.map((criterion) => [
+          criterion.key,
+          row.criteria_values?.[criterion.key] ?? "",
+        ])
+      )
+    );
   }
 
   // Save Row Correction
@@ -235,6 +298,15 @@ export default function PendataanPage() {
     const numBroken = editBrokenLights === "" ? 0 : Number(editBrokenLights);
     const numCrime = editCrime === "" ? 0 : Number(editCrime);
     const numBoarding = editBoarding === "" ? 0 : Number(editBoarding);
+    const criteriaValues: Record<string, number> = {};
+    for (const criterion of criteria) {
+      const value = editCriteriaValues[criterion.key];
+      if (value === undefined || value === "") {
+        setCsvErrorMsg(`Nilai kriteria "${criterion.name}" wajib diisi.`);
+        return;
+      }
+      criteriaValues[criterion.key] = Number(value);
+    }
 
     const updatedRows = previewData.rows.map((r) => {
       if (r.row_number === editingRow.row_number) {
@@ -254,6 +326,7 @@ export default function PendataanPage() {
           broken_lights: numBroken,
           dawn_crime_count: numCrime,
           boarding_house_count: numBoarding,
+          criteria_values: criteriaValues,
           inspection_date: editDate,
           status,
           issues,
@@ -271,6 +344,7 @@ export default function PendataanPage() {
       dawn_crime_count: numCrime,
       boarding_house_count: numBoarding,
       inspection_date: editDate,
+      criteria_values: criteriaValues,
     };
 
     setCorrections((prev) => [
@@ -306,13 +380,10 @@ export default function PendataanPage() {
       setPreviewData(null);
       setCsvFile(null);
       setCorrections([]);
-    } catch {
-      setCsvSuccessMsg(
-        `Batch ${previewData.batch_id} berhasil dikonfirmasi (simulasi lokal)! Data telah diimpor.`
+    } catch (error) {
+      setCsvErrorMsg(
+        error instanceof Error ? error.message : "Gagal menyimpan batch CSV."
       );
-      setPreviewData(null);
-      setCsvFile(null);
-      setCorrections([]);
     } finally {
       setIsConfirming(false);
     }
@@ -320,14 +391,14 @@ export default function PendataanPage() {
 
   // Download CSV Template
   function handleDownloadTemplate() {
-    const templateContent =
-      "segment_code,total_lights,broken_lights,dawn_crime_count,boarding_house_count,inspection_date\n" +
-      "GG-CSK-001,12,7,5,18,2026-11-10\n" +
-      "GG-CSK-002,10,4,3,14,2026-11-09\n" +
-      "GG-CRG-001,14,8,6,16,2026-11-08\n" +
-      "GG-GHN-001,11,5,4,15,2026-11-07\n" +
-      "GG-HGM-001,8,2,1,11,2026-11-05\n" +
-      "GG-SKW-001,7,2,1,8,2026-11-04\n";
+    const baseHeaders =
+      "segment_code,total_lights,broken_lights,dawn_crime_count,boarding_house_count,inspection_date";
+    const headers = [...criteria.map((criterion) => criterion.key)];
+    const templateContent = [
+      [baseHeaders, ...headers].join(","),
+      ["GG-CSK-001", "12", "7", "5", "18", "2026-11-10", ...headers.map(() => "1")].join(","),
+      ["GG-CSK-002", "10", "4", "3", "14", "2026-11-09", ...headers.map(() => "1")].join(","),
+    ].join("\n");
 
     const blob = new Blob([templateContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -426,7 +497,7 @@ export default function PendataanPage() {
               Formulir Observasi Lapangan
             </h2>
             <p className="text-xs text-zinc-400 mb-6">
-              Masukkan metrik 3 kriteria DSS: C1 (Kerusakan Lampu), C2 (Rekap Curanmor), dan C3 (Kepadatan Kos).
+              Masukkan indikator bawaan dan nilai kriteria tambahan dari bobot AHP aktif.
             </p>
 
             <form onSubmit={handleManualSubmit} className="space-y-5">
@@ -525,6 +596,40 @@ export default function PendataanPage() {
                   <p className="text-[11px] text-zinc-400 mt-1">Jumlah bangunan kos aktif di sepanjang gang.</p>
                 </div>
               </div>
+
+              {criteria.length > 0 && (
+                <fieldset className="space-y-4 rounded-xl border border-zinc-100 p-4">
+                  <legend className="px-1 text-xs font-semibold text-zinc-800">
+                    Nilai kriteria tambahan
+                  </legend>
+                  <p className="text-[11px] text-zinc-500">
+                    Isi nilai untuk kriteria yang dikonfigurasi pada bobot AHP aktif.
+                  </p>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    {criteria.map((criterion) => (
+                      <label key={criterion.key}>
+                        <span className="mb-1.5 block text-xs font-semibold text-zinc-700">
+                          {criterion.name}
+                        </span>
+                        <input
+                          type="number"
+                          step="any"
+                          required
+                          value={manualCriteriaValues[criterion.key] ?? ""}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            setManualCriteriaValues((current) => ({
+                              ...current,
+                              [criterion.key]: value === "" ? "" : Number(value),
+                            }));
+                          }}
+                          className="w-full rounded-xl border border-zinc-200 bg-white px-3.5 py-2 text-xs text-zinc-900"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold text-zinc-700 mb-1.5">
@@ -631,7 +736,8 @@ export default function PendataanPage() {
                 {csvFile ? csvFile.name : "Klik atau seret berkas .csv ke sini"}
               </p>
               <p className="text-[11px] text-zinc-400 mt-1">
-                Format kolom: segment_code, total_lights, broken_lights, dawn_crime_count, boarding_house_count, inspection_date
+                Kolom dasar: segment_code, total_lights, broken_lights, dawn_crime_count, boarding_house_count, inspection_date
+                {criteria.length > 0 && ` · Tambahan: ${criteria.map((criterion) => criterion.key).join(", ")}`}
               </p>
             </label>
           </div>
@@ -682,6 +788,11 @@ export default function PendataanPage() {
                       <th className="py-2.5 px-3 text-center">Lampu Rusak</th>
                       <th className="py-2.5 px-3 text-center">Curanmor</th>
                       <th className="py-2.5 px-3 text-center">Kos</th>
+                      {criteria.map((criterion) => (
+                        <th key={criterion.key} className="py-2.5 px-3 text-center">
+                          {criterion.name}
+                        </th>
+                      ))}
                       <th className="py-2.5 px-3">Tanggal Inspeksi</th>
                       <th className="py-2.5 px-3 text-center">Status</th>
                       <th className="py-2.5 px-3">Catatan / Isu Validasi</th>
@@ -701,6 +812,11 @@ export default function PendataanPage() {
                         <td className="py-2.5 px-3 text-center">{r.broken_lights ?? "-"}</td>
                         <td className="py-2.5 px-3 text-center">{r.dawn_crime_count ?? 0}</td>
                         <td className="py-2.5 px-3 text-center">{r.boarding_house_count ?? "-"}</td>
+                        {criteria.map((criterion) => (
+                          <td key={criterion.key} className="py-2.5 px-3 text-center">
+                            {r.criteria_values?.[criterion.key] ?? "-"}
+                          </td>
+                        ))}
                         <td className="py-2.5 px-3">{r.inspection_date ?? "-"}</td>
                         <td className="py-2.5 px-3 text-center">
                           <span
@@ -790,7 +906,7 @@ export default function PendataanPage() {
           {/* Modal Koreksi Baris CSV */}
           {editingRow && (
             <div className="fixed inset-0 bg-black/40 backdrop-blur-2xs flex items-center justify-center p-4 z-50 animate-in fade-in">
-              <div className="bg-white rounded-2xl border border-zinc-200 max-w-md w-full p-6 shadow-xl relative">
+              <div className="bg-white rounded-2xl border border-zinc-200 max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-xl relative">
                 <div className="flex items-center justify-between pb-3 border-b border-zinc-100">
                   <h3 className="text-sm font-bold text-zinc-900">
                     Koreksi Data Baris #{editingRow.row_number} [{editingRow.segment_code}]
@@ -875,6 +991,27 @@ export default function PendataanPage() {
                       />
                     </div>
                   </div>
+
+                  {criteria.map((criterion) => (
+                    <div key={criterion.key}>
+                      <label className="mb-1 block text-xs font-medium text-zinc-700">
+                        {criterion.name}
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={editCriteriaValues[criterion.key] ?? ""}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setEditCriteriaValues((current) => ({
+                            ...current,
+                            [criterion.key]: value === "" ? "" : Number(value),
+                          }));
+                        }}
+                        className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-900"
+                      />
+                    </div>
+                  ))}
 
                   <div>
                     <label className="block text-xs font-medium text-zinc-700 mb-1">

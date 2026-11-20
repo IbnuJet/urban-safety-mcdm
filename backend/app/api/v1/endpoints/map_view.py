@@ -114,6 +114,19 @@ def get_priority_map_layer(
                     "broken_lights": snap.get("broken_lights"),
                     "dawn_crime_count": snap.get("dawn_crime_count"),
                     "boarding_house_count": snap.get("boarding_house_count"),
+                    "criteria_values": snap.get("criteria_values", {}),
+                    "normalized_values": snap.get("normalized_values", {}),
+                    "weighted_values": snap.get("weighted_values", {}),
+                    "ahp_weights": cycle.weights_snapshot.get(
+                        "weights",
+                        {
+                            "broken_lights": cycle.weights_snapshot.get("w_light_damage"),
+                            "dawn_crime_count": cycle.weights_snapshot.get("w_dawn_crime"),
+                            "boarding_house_count": cycle.weights_snapshot.get(
+                                "w_boarding_density"
+                            ),
+                        },
+                    ),
                     "inspection_date": snap.get("inspection_date"),
                     "is_eligible": r.is_eligible,
                     "ineligible_reason": r.ineligible_reason,
@@ -184,29 +197,25 @@ def get_map_segment_detail(
             geojson_geometry=segment.geojson_geometry,
             cycle_id=cycle.id,
             cycle_name=cycle.cycle_name,
-            ahp_weights={
-                "w_light_damage": float(cycle.weights_snapshot.get("w_light_damage", 0.0)),
-                "w_dawn_crime": float(cycle.weights_snapshot.get("w_dawn_crime", 0.0)),
-                "w_boarding_density": float(
-                    cycle.weights_snapshot.get("w_boarding_density", 0.0)
-                ),
-            },
+            ahp_weights=cycle.weights_snapshot.get(
+                "weights",
+                {
+                    "broken_lights": cycle.weights_snapshot.get("w_light_damage"),
+                    "dawn_crime_count": cycle.weights_snapshot.get("w_dawn_crime"),
+                    "boarding_house_count": cycle.weights_snapshot.get(
+                        "w_boarding_density"
+                    ),
+                },
+            ),
             indicators={
                 "total_lights": snap.get("total_lights"),
                 "broken_lights": snap.get("broken_lights"),
                 "dawn_crime_count": snap.get("dawn_crime_count"),
                 "boarding_house_count": snap.get("boarding_house_count"),
+                **snap.get("criteria_values", {}),
             },
-            normalized_values={
-                "norm_c1": ranking_row.norm_c1,
-                "norm_c2": ranking_row.norm_c2,
-                "norm_c3": ranking_row.norm_c3,
-            },
-            weighted_values={
-                "weighted_c1": ranking_row.weighted_c1,
-                "weighted_c2": ranking_row.weighted_c2,
-                "weighted_c3": ranking_row.weighted_c3,
-            },
+            normalized_values=snap.get("normalized_values", {}),
+            weighted_values=snap.get("weighted_values", {}),
             d_plus=ranking_row.d_plus,
             d_minus=ranking_row.d_minus,
             preference_score=ranking_row.preference_score,

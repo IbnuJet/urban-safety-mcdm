@@ -1,535 +1,450 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
-  calculateAHPPreview,
-  fetchAHPVersions,
-  createAHPVersion,
-  activateAHPVersion,
   AHPCalculateResponse,
+  AHPCriterion,
   AHPVersionResponse,
+  calculateAHPPreview,
+  createAHPVersion,
+  fetchAHPVersions,
 } from "../../lib/api";
 
+const INITIAL_CRITERIA: AHPCriterion[] = [
+  { key: "broken_lights", name: "Kerusakan Lampu PJU", direction: "max" },
+  { key: "dawn_crime_count", name: "Curanmor Dini Hari", direction: "max" },
+  { key: "boarding_house_count", name: "Kepadatan Indekos", direction: "max" },
+];
+
+const INITIAL_MATRIX = [
+  [1, 3, 5],
+  [1 / 3, 1, 2],
+  [1 / 5, 1 / 2, 1],
+];
+
 export default function AHPPage() {
-  // State 3 Perbandingan Berpasangan:
-  // Row 1: C1 (Lampu) vs C2 (Curanmor)
-  const [pref1, setPref1] = useState<"c1" | "c2" | "equal">("c1");
-  const [int1, setInt1] = useState<number>(3);
-
-  // Row 2: C1 (Lampu) vs C3 (Indekos)
-  const [pref2, setPref2] = useState<"c1" | "c3" | "equal">("c1");
-  const [int2, setInt2] = useState<number>(5);
-
-  // Row 3: C2 (Curanmor) vs C3 (Indekos)
-  const [pref3, setPref3] = useState<"c2" | "c3" | "equal">("c2");
-  const [int3, setInt3] = useState<number>(2);
-
-  // Hasil Perhitungan
-  const [calcResult, setCalcResult] = useState<AHPCalculateResponse | null>({
-    pairwise_matrix: [
-      [1.0, 3.0, 5.0],
-      [1.0 / 3.0, 1.0, 2.0],
-      [1.0 / 5.0, 0.5, 1.0],
-    ],
-    w_light_damage: 0.648,
-    w_dawn_crime: 0.23,
-    w_boarding_density: 0.122,
-    lambda_max: 3.003,
-    ci: 0.0017,
-    ri: 0.58,
-    cr: 0.003,
-    is_consistent: true,
-  });
-
+  const [criteria, setCriteria] = useState<AHPCriterion[]>(INITIAL_CRITERIA);
+  const [matrix, setMatrix] = useState<number[][]>(INITIAL_MATRIX);
+  const [calcResult, setCalcResult] = useState<AHPCalculateResponse | null>(null);
+  const [versions, setVersions] = useState<AHPVersionResponse[]>([]);
+  const [activeVersionName, setActiveVersionName] = useState("Belum ada");
   const [isCalculating, setIsCalculating] = useState(false);
   const [isActivating, setIsActivating] = useState(false);
-  const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
-  const [actionErrorMsg, setActionErrorMsg] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // Active Version & History
-  const [versions, setVersions] = useState<AHPVersionResponse[]>([]);
-  const [activeVersionName, setActiveVersionName] = useState<string>("Versi 1");
-
-  // Load versions
   async function loadVersions() {
     try {
-      const data = await fetchAHPVersions();
-      setVersions(data);
-      const active = data.find((v) => v.is_active);
-      if (active) {
-        setActiveVersionName(active.version_name);
-      }
-    } catch {}
+      const loadedVersions = await fetchAHPVersions();
+      setVersions(loadedVersions);
+      setActiveVersionName(
+        loadedVersions.find((version) => version.is_active)?.version_name ?? "Belum ada"
+      );
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Gagal memuat versi AHP."
+      );
+    }
   }
 
   useEffect(() => {
-    loadVersions();
+    let active = true;
+    fetchAHPVersions()
+      .then((loadedVersions) => {
+        if (!active) return;
+        setVersions(loadedVersions);
+        const activeVersion = loadedVersions.find((version) => version.is_active);
+        setActiveVersionName(activeVersion?.version_name ?? "Belum ada");
+        const nextCriteria = activeVersion?.criteria ?? INITIAL_CRITERIA;
+        const nextMatrix = activeVersion?.pairwise_matrix ?? INITIAL_MATRIX;
+        setCriteria(nextCriteria);
+        setMatrix(nextMatrix);
+        return calculateAHPPreview(nextMatrix, nextCriteria).then((result) => {
+          if (active) setCalcResult(result);
+        });
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setErrorMessage(
+          error instanceof Error ? error.message : "Gagal memuat versi AHP."
+        );
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
-  // Konversi pilihan UI ke nilai rasio Saaty
-  function getRatio(pref: string, intensity: number, item1Key: string): number {
-    if (pref === "equal") return 1.0;
-    if (pref === item1Key) return intensity;
-    return 1.0 / intensity;
-  }
-
-  // Hitung Bobot Realtime
   async function runCalculation(
-    p1 = pref1,
-    i1 = int1,
-    p2 = pref2,
-    i2 = int2,
-    p3 = pref3,
-    i3 = int3
+    nextCriteria = criteria,
+    nextMatrix = matrix
   ) {
+    if (nextCriteria.length === 0) return;
     setIsCalculating(true);
-    setActionSuccessMsg(null);
-    setActionErrorMsg(null);
-
-    const a12 = getRatio(p1, i1, "c1");
-    const a13 = getRatio(p2, i2, "c1");
-    const a23 = getRatio(p3, i3, "c2");
-
-    const matrix = [
-      [1.0, a12, a13],
-      [1.0 / a12, 1.0, a23],
-      [1.0 / a13, 1.0 / a23, 1.0],
-    ];
-
+    setErrorMessage(null);
     try {
-      const res = await calculateAHPPreview(matrix);
-      setCalcResult(res);
-    } catch (err: any) {
-      console.error(err);
+      const result = await calculateAHPPreview(nextMatrix, nextCriteria);
+      setCalcResult(result);
+    } catch (error) {
+      setCalcResult(null);
+      setErrorMessage(
+        error instanceof Error ? error.message : "Gagal menghitung bobot AHP."
+      );
     } finally {
       setIsCalculating(false);
     }
   }
 
-  // Toggle Contoh Inkonsisten (AHP Perlu Direvisi)
-  function handleToggleInconsistent() {
-    // Buat penilaian yang tidak transitif:
-    // C1 > C2 (5x), C2 > C3 (4x), tapi C3 > C1 (5x) -> CR tinggi (~0.6+)
-    setPref1("c1");
-    setInt1(5);
-    setPref2("c3");
-    setInt2(5);
-    setPref3("c2");
-    setInt3(4);
-    runCalculation("c1", 5, "c3", 5, "c2", 4);
+  function updateCriterion(index: number, patch: Partial<AHPCriterion>) {
+    const updated = criteria.map((criterion, currentIndex) =>
+      currentIndex === index ? { ...criterion, ...patch } : criterion
+    );
+    setCriteria(updated);
+    void runCalculation(updated, matrix);
   }
 
-  // Reset ke Rekomendasi Konsisten (Sesuai Figma)
-  function handleResetConsistent() {
-    setPref1("c1");
-    setInt1(3);
-    setPref2("c1");
-    setInt2(5);
-    setPref3("c2");
-    setInt3(2);
-    runCalculation("c1", 3, "c1", 5, "c2", 2);
+  function addCriterion() {
+    if (criteria.length >= 15) return;
+    const nextCriteria = [
+      ...criteria,
+      {
+        key: `criterion_${crypto.randomUUID().replaceAll("-", "")}`,
+        name: `Kriteria ${criteria.length + 1}`,
+        direction: "max" as const,
+      },
+    ];
+    const nextMatrix = [
+      ...matrix.map((row) => [...row, 1]),
+      Array(nextCriteria.length).fill(1),
+    ];
+    setCriteria(nextCriteria);
+    setMatrix(nextMatrix);
+    void runCalculation(nextCriteria, nextMatrix);
   }
 
-  // Handler Tombol "Aktifkan bobot"
+  function removeCriterion(index: number) {
+    if (criteria.length <= 1) return;
+    const nextCriteria = criteria.filter((_, currentIndex) => currentIndex !== index);
+    const nextMatrix = matrix
+      .filter((_, currentIndex) => currentIndex !== index)
+      .map((row) => row.filter((_, currentIndex) => currentIndex !== index));
+    setCriteria(nextCriteria);
+    setMatrix(nextMatrix);
+    void runCalculation(nextCriteria, nextMatrix);
+  }
+
+  function setPairwiseComparison(
+    left: number,
+    right: number,
+    preferred: "left" | "right" | "equal",
+    intensity: number
+  ) {
+    const value = preferred === "equal" ? 1 : preferred === "left" ? intensity : 1 / intensity;
+    const nextMatrix = matrix.map((row) => [...row]);
+    nextMatrix[left][right] = value;
+    nextMatrix[right][left] = 1 / value;
+    setMatrix(nextMatrix);
+    void runCalculation(criteria, nextMatrix);
+  }
+
   async function handleActivateWeight() {
-    if (!calcResult) return;
-    if (!calcResult.is_consistent) {
-      setActionErrorMsg(
-        "Bobot tidak konsisten (CR > 0,10) tidak dapat diaktifkan. Harap sesuaikan perbandingan terlebih dahulu."
-      );
-      return;
-    }
-
+    if (!calcResult?.is_consistent) return;
     setIsActivating(true);
-    setActionSuccessMsg(null);
-    setActionErrorMsg(null);
-
-    const newVersionName = `Versi ${versions.length + 1}`;
+    setErrorMessage(null);
+    setSuccessMessage(null);
     try {
       const created = await createAHPVersion({
         pairwise_matrix: calcResult.pairwise_matrix,
-        version_name: newVersionName,
+        criteria: criteria.map(({ key, name, direction }) => ({ key, name, direction })),
+        version_name: `Versi ${versions.length + 1}`,
         activate_immediately: true,
       });
       setActiveVersionName(created.version_name);
-      setActionSuccessMsg(`Bobot "${created.version_name}" berhasil diaktifkan!`);
+      setSuccessMessage(`Bobot "${created.version_name}" berhasil diaktifkan.`);
       await loadVersions();
-    } catch {
-      // Local simulation
-      setActiveVersionName(newVersionName);
-      setActionSuccessMsg(`Bobot "${newVersionName}" berhasil diaktifkan (simulasi lokal)!`);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Gagal mengaktifkan bobot AHP."
+      );
     } finally {
       setIsActivating(false);
-      setTimeout(() => setActionSuccessMsg(null), 4000);
     }
   }
 
-  // Format angka desimal dengan koma sesuai format Indonesia di Figma (contoh: 64,8% dan 0,003)
-  function formatPercent(val: number): string {
-    return (val * 100).toFixed(1).replace(".", ",") + "%";
-  }
-
-  function formatCR(val: number): string {
-    return val.toFixed(3).replace(".", ",");
+  function formatPercent(value: number) {
+    return `${(value * 100).toFixed(1).replace(".", ",")}%`;
   }
 
   return (
-    <div className="p-8 bg-[#F7F8F5] min-h-full">
-      {/* Header Halaman Sesuai Desain Figma */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-7">
+    <main className="min-h-full bg-[#F7F8F5] p-8">
+      <header className="mb-7 flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-zinc-900 leading-tight">
+          <h1 className="text-3xl font-bold tracking-tight text-zinc-900">
             Pembobotan AHP
           </h1>
-          <p className="text-sm text-zinc-500 mt-1">
-            Bandingkan tiga kriteria untuk menentukan bobot prioritas perbaikan.
+          <p className="mt-1 text-sm text-zinc-500">
+            Atur kriteria, bandingkan tingkat kepentingannya, lalu simpan bobot.
           </p>
         </div>
-        <div>
-          <span className="px-3.5 py-1.5 rounded-full text-xs font-semibold bg-[#edf4f0] text-[#1a5b3e] border border-[#d2e4d9] shadow-2xs">
-            Bobot aktif - {activeVersionName}
-          </span>
-        </div>
-      </div>
+        <span className="rounded-full border border-[#d2e4d9] bg-[#edf4f0] px-3.5 py-1.5 text-xs font-semibold text-[#1a5b3e]">
+          Bobot aktif - {activeVersionName}
+        </span>
+      </header>
 
-      {/* Alert Notifikasi Sukses / Error */}
-      {actionSuccessMsg && (
-        <div className="mb-6 p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-2 animate-in fade-in">
-          <svg className="w-4 h-4 text-emerald-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
-          </svg>
-          <span className="font-medium">{actionSuccessMsg}</span>
-        </div>
+      {errorMessage && (
+        <p role="alert" className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {errorMessage}
+        </p>
+      )}
+      {successMessage && (
+        <p role="status" className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+          {successMessage}
+        </p>
       )}
 
-      {actionErrorMsg && (
-        <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex items-center gap-2 animate-in fade-in">
-          <svg className="w-4 h-4 text-red-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-          <span className="font-medium">{actionErrorMsg}</span>
-        </div>
-      )}
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
+        <section className="space-y-6 rounded-2xl border border-zinc-200/80 bg-white p-6 shadow-2xs lg:col-span-7">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-base font-bold text-zinc-900">Daftar kriteria</h2>
+              <p className="mt-1 text-xs text-zinc-400">
+                Maksimal 15 kriteria agar rasio konsistensi memiliki nilai RI.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={addCriterion}
+              disabled={criteria.length >= 15}
+              className="rounded-xl border border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
+            >
+              Tambah kriteria
+            </button>
+          </div>
 
-      {/* Grid Utama 2 Kolom Sesuai Figma */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* KARTU KIRI: FORM PERBANDINGAN BERPASANGAN */}
-        <div className="lg:col-span-7 bg-white rounded-2xl border border-zinc-200/80 p-6 shadow-2xs space-y-6">
-          <div>
+          <div className="space-y-3">
+            {criteria.map((criterion, index) => {
+              const isBuiltin = [
+                "broken_lights",
+                "dawn_crime_count",
+                "boarding_house_count",
+              ].includes(criterion.key);
+              return (
+                <div
+                  key={`${index}-${criterion.key}`}
+                  className="grid grid-cols-1 gap-3 rounded-xl border border-zinc-100 p-3 sm:grid-cols-12"
+                >
+                  <label className="sm:col-span-3">
+                      <span className="mb-1 block text-[11px] font-medium text-zinc-600">
+                        Key data
+                      </span>
+                      <input
+                        value={criterion.key}
+                        onChange={(event) =>
+                          updateCriterion(index, {
+                            key: event.target.value.toLowerCase().replace(/[^a-z0-9_]/g, "_"),
+                          })
+                        }
+                        disabled={isBuiltin}
+                        maxLength={80}
+                        className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-xs disabled:bg-zinc-100"
+                      />
+                    </label>
+                  <label className="sm:col-span-5">
+                  <span className="mb-1 block text-[11px] font-medium text-zinc-600">
+                    Nama kriteria
+                  </span>
+                  <input
+                    value={criterion.name}
+                    onChange={(event) =>
+                      updateCriterion(index, { name: event.target.value })
+                    }
+                    maxLength={150}
+                    className="w-full rounded-lg border border-zinc-200 px-3 py-2 text-xs"
+                  />
+                </label>
+                <label className="sm:col-span-3">
+                  <span className="mb-1 block text-[11px] font-medium text-zinc-600">
+                    Arah nilai
+                  </span>
+                  <select
+                    value={criterion.direction}
+                    onChange={(event) =>
+                      updateCriterion(index, {
+                        direction: event.target.value as "max" | "min",
+                      })
+                    }
+                    className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs"
+                  >
+                    <option value="max">Semakin besar semakin baik</option>
+                    <option value="min">Semakin kecil semakin baik</option>
+                  </select>
+                </label>
+                <div className="flex items-end sm:col-span-1">
+                  <button
+                    type="button"
+                    onClick={() => removeCriterion(index)}
+                    disabled={criteria.length <= 1}
+                    aria-label={`Hapus ${criterion.name}`}
+                    className="w-full rounded-lg px-2 py-2 text-xs text-red-600 hover:bg-red-50 disabled:opacity-30"
+                  >
+                    Hapus
+                  </button>
+                </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="border-t border-zinc-100 pt-5">
             <h2 className="text-base font-bold text-zinc-900">
               Perbandingan berpasangan
             </h2>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              Skala Saaty 1–9 · 1 sama penting, 9 mutlak lebih penting.
+            <p className="mb-4 mt-1 text-xs text-zinc-400">
+              Skala Saaty 1–9. Nilai perbandingan kebalikannya dihitung otomatis.
             </p>
-          </div>
-
-          <div className="space-y-6 pt-2">
-            {/* BARIS 1: Proporsi lampu mati vs Curanmor dini hari */}
-            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center pb-5 border-b border-zinc-100">
-              <div className="sm:col-span-5">
-                <p className="text-sm font-bold text-zinc-900">
-                  Proporsi lampu mati
-                </p>
-                <p className="text-xs text-zinc-400 mt-0.5">
-                  dibanding Curanmor dini hari
-                </p>
-              </div>
-              <div className="sm:col-span-4">
-                <label className="block text-[11px] font-medium text-zinc-600 mb-1">
-                  Lebih penting
-                </label>
-                <select
-                  value={pref1}
-                  onChange={(e) => {
-                    const val = e.target.value as "c1" | "c2" | "equal";
-                    setPref1(val);
-                    runCalculation(val, int1, pref2, int2, pref3, int3);
-                  }}
-                  className="w-full px-3 py-2 text-xs rounded-xl border border-zinc-200 bg-white text-zinc-900 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e] cursor-pointer"
-                >
-                  <option value="c1">Proporsi lampu mati</option>
-                  <option value="c2">Curanmor dini hari</option>
-                  <option value="equal">Sama penting</option>
-                </select>
-              </div>
-              <div className="sm:col-span-3">
-                <label className="block text-[11px] font-medium text-zinc-600 mb-1">
-                  Intensitas
-                </label>
-                <select
-                  disabled={pref1 === "equal"}
-                  value={int1}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value);
-                    setInt1(val);
-                    runCalculation(pref1, val, pref2, int2, pref3, int3);
-                  }}
-                  className="w-full px-3 py-2 text-xs rounded-xl border border-zinc-200 bg-white text-zinc-900 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e] disabled:bg-zinc-100 disabled:text-zinc-400 cursor-pointer"
-                >
-                  {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
-                    <option key={num} value={num}>
-                      {num}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            <div className="space-y-4">
+              {criteria.map((left, leftIndex) =>
+                criteria.slice(leftIndex + 1).map((right, offset) => {
+                  const rightIndex = leftIndex + offset + 1;
+                  const ratio = matrix[leftIndex][rightIndex];
+                  const preference =
+                    ratio === 1 ? "equal" : ratio > 1 ? "left" : "right";
+                  const intensity = Math.min(
+                    9,
+                    Math.max(1, Math.round(preference === "right" ? 1 / ratio : ratio))
+                  );
+                  return (
+                    <div
+                      key={`${left.key}-${right.key}`}
+                      className="grid grid-cols-1 items-end gap-3 border-b border-zinc-100 pb-4 sm:grid-cols-12"
+                    >
+                      <p className="text-xs font-medium text-zinc-800 sm:col-span-5">
+                        {left.name} <span className="text-zinc-400">dibanding</span>{" "}
+                        {right.name}
+                      </p>
+                      <label className="sm:col-span-5">
+                        <span className="mb-1 block text-[11px] text-zinc-600">
+                          Kriteria yang lebih penting
+                        </span>
+                        <select
+                          value={preference}
+                          onChange={(event) =>
+                            setPairwiseComparison(
+                              leftIndex,
+                              rightIndex,
+                              event.target.value as "left" | "right" | "equal",
+                              intensity
+                            )
+                          }
+                          className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs"
+                        >
+                          <option value="left">{left.name}</option>
+                          <option value="right">{right.name}</option>
+                          <option value="equal">Sama penting</option>
+                        </select>
+                      </label>
+                      <label className="sm:col-span-2">
+                        <span className="mb-1 block text-[11px] text-zinc-600">
+                          Intensitas
+                        </span>
+                        <select
+                          value={intensity}
+                          disabled={preference === "equal"}
+                          onChange={(event) =>
+                            setPairwiseComparison(
+                              leftIndex,
+                              rightIndex,
+                              preference as "left" | "right" | "equal",
+                              Number(event.target.value)
+                            )
+                          }
+                          className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs disabled:bg-zinc-100"
+                        >
+                          {Array.from({ length: 9 }, (_, number) => number + 1).map(
+                            (number) => (
+                              <option key={number} value={number}>
+                                {number}
+                              </option>
+                            )
+                          )}
+                        </select>
+                      </label>
+                    </div>
+                  );
+                })
+              )}
             </div>
-
-            {/* BARIS 2: Proporsi lampu mati vs Indekos dilayani */}
-            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center pb-5 border-b border-zinc-100">
-              <div className="sm:col-span-5">
-                <p className="text-sm font-bold text-zinc-900">
-                  Proporsi lampu mati
-                </p>
-                <p className="text-xs text-zinc-400 mt-0.5">
-                  dibanding Indekos dilayani
-                </p>
-              </div>
-              <div className="sm:col-span-4">
-                <label className="block text-[11px] font-medium text-zinc-600 mb-1">
-                  Lebih penting
-                </label>
-                <select
-                  value={pref2}
-                  onChange={(e) => {
-                    const val = e.target.value as "c1" | "c3" | "equal";
-                    setPref2(val);
-                    runCalculation(pref1, int1, val, int2, pref3, int3);
-                  }}
-                  className="w-full px-3 py-2 text-xs rounded-xl border border-zinc-200 bg-white text-zinc-900 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e] cursor-pointer"
-                >
-                  <option value="c1">Proporsi lampu mati</option>
-                  <option value="c3">Indekos dilayani</option>
-                  <option value="equal">Sama penting</option>
-                </select>
-              </div>
-              <div className="sm:col-span-3">
-                <label className="block text-[11px] font-medium text-zinc-600 mb-1">
-                  Intensitas
-                </label>
-                <select
-                  disabled={pref2 === "equal"}
-                  value={int2}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value);
-                    setInt2(val);
-                    runCalculation(pref1, int1, pref2, val, pref3, int3);
-                  }}
-                  className="w-full px-3 py-2 text-xs rounded-xl border border-zinc-200 bg-white text-zinc-900 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e] disabled:bg-zinc-100 disabled:text-zinc-400 cursor-pointer"
-                >
-                  {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
-                    <option key={num} value={num}>
-                      {num}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {/* BARIS 3: Curanmor dini hari vs Indekos dilayani */}
-            <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center pb-2">
-              <div className="sm:col-span-5">
-                <p className="text-sm font-bold text-zinc-900">
-                  Curanmor dini hari
-                </p>
-                <p className="text-xs text-zinc-400 mt-0.5">
-                  dibanding Indekos dilayani
-                </p>
-              </div>
-              <div className="sm:col-span-4">
-                <label className="block text-[11px] font-medium text-zinc-600 mb-1">
-                  Lebih penting
-                </label>
-                <select
-                  value={pref3}
-                  onChange={(e) => {
-                    const val = e.target.value as "c2" | "c3" | "equal";
-                    setPref3(val);
-                    runCalculation(pref1, int1, pref2, int2, val, int3);
-                  }}
-                  className="w-full px-3 py-2 text-xs rounded-xl border border-zinc-200 bg-white text-zinc-900 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e] cursor-pointer"
-                >
-                  <option value="c2">Curanmor dini hari</option>
-                  <option value="c3">Indekos dilayani</option>
-                  <option value="equal">Sama penting</option>
-                </select>
-              </div>
-              <div className="sm:col-span-3">
-                <label className="block text-[11px] font-medium text-zinc-600 mb-1">
-                  Intensitas
-                </label>
-                <select
-                  disabled={pref3 === "equal"}
-                  value={int3}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value);
-                    setInt3(val);
-                    runCalculation(pref1, int1, pref2, int2, pref3, val);
-                  }}
-                  className="w-full px-3 py-2 text-xs rounded-xl border border-zinc-200 bg-white text-zinc-900 focus:outline-none focus:ring-1 focus:ring-[#1a5b3e] disabled:bg-zinc-100 disabled:text-zinc-400 cursor-pointer"
-                >
-                  {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
-                    <option key={num} value={num}>
-                      {num}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          </div>
-
-          {/* Tombol Aksi Bawah Kartu Kiri */}
-          <div className="pt-4 border-t border-zinc-100 flex items-center justify-end gap-3">
-            {calcResult?.is_consistent ? (
-              <button
-                type="button"
-                onClick={handleToggleInconsistent}
-                className="px-4 py-2 rounded-xl border border-zinc-200 hover:bg-zinc-50 text-xs font-medium text-zinc-700 transition cursor-pointer shadow-2xs"
-              >
-                Lihat contoh tidak konsisten
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleResetConsistent}
-                className="px-4 py-2 rounded-xl border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-xs font-semibold text-[#1a5b3e] transition cursor-pointer"
-              >
-                Kembalikan ke konsisten
-              </button>
-            )}
-
             <button
               type="button"
-              onClick={() => runCalculation()}
+              onClick={() => void runCalculation()}
               disabled={isCalculating}
-              className="px-5 py-2 rounded-xl bg-[#1a5b3e] hover:bg-[#154932] text-white text-xs font-medium transition shadow-xs cursor-pointer flex items-center gap-1.5"
+              className="mt-5 rounded-xl bg-[#1a5b3e] px-5 py-2.5 text-xs font-semibold text-white hover:bg-[#154932] disabled:opacity-50"
             >
               {isCalculating ? "Menghitung..." : "Hitung bobot"}
             </button>
           </div>
-        </div>
+        </section>
 
-        {/* KARTU KANAN: BOBOT KRITERIA & KONSISTENSI */}
-        <div className="lg:col-span-5 bg-white rounded-2xl border border-zinc-200/80 p-6 shadow-2xs space-y-6">
+        <section className="space-y-5 rounded-2xl border border-zinc-200/80 bg-white p-6 shadow-2xs lg:col-span-5">
           <div>
-            <h2 className="text-base font-bold text-zinc-900">
-              Bobot kriteria
-            </h2>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              Bobot digunakan oleh pemeringkatan TOPSIS.
+            <h2 className="text-base font-bold text-zinc-900">Hasil pembobotan</h2>
+            <p className="mt-1 text-xs text-zinc-400">
+              Bobot kriteria akan digunakan oleh TOPSIS.
             </p>
           </div>
-
-          {calcResult && (
-            <div className="space-y-6">
-              {/* Progress Bars Bobot 3 Kriteria */}
-              <div className="space-y-4">
-                {/* Kriteria 1 */}
-                <div>
-                  <div className="flex justify-between text-xs mb-1.5 font-medium text-zinc-800">
-                    <span>Proporsi lampu mati</span>
-                    <span className="font-bold text-zinc-900">
-                      {formatPercent(calcResult.w_light_damage)}
-                    </span>
+          {calcResult ? (
+            <>
+              <div className="space-y-3">
+                {calcResult.criteria.map((criterion) => (
+                  <div key={criterion.key}>
+                    <div className="mb-1 flex justify-between gap-3 text-xs">
+                      <span className="font-medium text-zinc-700">{criterion.name}</span>
+                      <span className="font-bold text-zinc-900">
+                        {formatPercent(criterion.weight ?? 0)}
+                      </span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-zinc-100">
+                      <div
+                        className="h-full rounded-full bg-[#1a5b3e]"
+                        style={{ width: `${(criterion.weight ?? 0) * 100}%` }}
+                      />
+                    </div>
                   </div>
-                  <div className="w-full h-2 rounded-full bg-zinc-100 overflow-hidden">
-                    <div
-                      className="h-full bg-[#1a5b3e] transition-all duration-300 rounded-full"
-                      style={{ width: `${calcResult.w_light_damage * 100}%` }}
-                    />
-                  </div>
-                </div>
-
-                {/* Kriteria 2 */}
-                <div>
-                  <div className="flex justify-between text-xs mb-1.5 font-medium text-zinc-800">
-                    <span>Curanmor dini hari</span>
-                    <span className="font-bold text-zinc-900">
-                      {formatPercent(calcResult.w_dawn_crime)}
-                    </span>
-                  </div>
-                  <div className="w-full h-2 rounded-full bg-zinc-100 overflow-hidden">
-                    <div
-                      className="h-full bg-[#1a5b3e] transition-all duration-300 rounded-full"
-                      style={{ width: `${calcResult.w_dawn_crime * 100}%` }}
-                    />
-                  </div>
-                </div>
-
-                {/* Kriteria 3 */}
-                <div>
-                  <div className="flex justify-between text-xs mb-1.5 font-medium text-zinc-800">
-                    <span>Indekos dilayani</span>
-                    <span className="font-bold text-zinc-900">
-                      {formatPercent(calcResult.w_boarding_density)}
-                    </span>
-                  </div>
-                  <div className="w-full h-2 rounded-full bg-zinc-100 overflow-hidden">
-                    <div
-                      className="h-full bg-[#1a5b3e] transition-all duration-300 rounded-full"
-                      style={{ width: `${calcResult.w_boarding_density * 100}%` }}
-                    />
-                  </div>
-                </div>
+                ))}
               </div>
 
-              {/* Status Konsistensi (Konsisten vs AHP Perlu Direvisi) */}
-              {calcResult.is_consistent ? (
-                <div className="p-4 rounded-xl bg-[#edf4f0] border border-[#d2e4d9] text-xs space-y-0.5">
-                  <div className="flex items-center gap-1.5 font-bold text-[#1a5b3e]">
-                    <svg className="w-4 h-4 text-[#1a5b3e]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
-                    </svg>
-                    <span>Konsisten · CR {formatCR(calcResult.cr)}</span>
-                  </div>
-                  <p className="text-[11px] text-zinc-500 pl-5.5">
-                    Batas rasio konsistensi 0,10.
-                  </p>
-                </div>
-              ) : (
-                /* STATE AHP PERLU DIREVISI */
-                <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-xs space-y-1.5 animate-in fade-in">
-                  <div className="flex items-center gap-1.5 font-bold text-amber-800">
-                    <svg className="w-4 h-4 text-amber-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                    </svg>
-                    <span>Tidak konsisten · CR {formatCR(calcResult.cr)}</span>
-                  </div>
-                  <p className="text-[11px] text-amber-700 pl-5.5">
-                    Perlu direvisi. Batas rasio konsistensi 0,10.
-                  </p>
-                  <p className="text-[11px] text-amber-900 bg-amber-100/60 p-2 rounded-lg mt-1">
-                    <strong>Rekomendasi revisi:</strong> Terdapat inkonsistensi transitif antar kriteria. Sesuaikan perbandingan agar kepentingan kriteria berurutan secara logis.
-                  </p>
-                </div>
-              )}
-
-              {/* Tombol Utama: Aktifkan bobot */}
-              <div>
-                <button
-                  type="button"
-                  onClick={handleActivateWeight}
-                  disabled={!calcResult.is_consistent || isActivating}
-                  className="w-full py-2.5 rounded-xl bg-[#1a5b3e] hover:bg-[#154932] text-white text-xs font-semibold transition shadow-xs cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                >
-                  {isActivating ? (
-                    <>
-                      <svg className="animate-spin h-3.5 w-3.5 text-white" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                      </svg>
-                      <span>Mengaktifkan...</span>
-                    </>
-                  ) : (
-                    <span>Aktifkan bobot</span>
-                  )}
-                </button>
+              <div
+                className={`rounded-xl border p-4 text-xs ${
+                  calcResult.is_consistent
+                    ? "border-[#d2e4d9] bg-[#edf4f0] text-[#1a5b3e]"
+                    : "border-amber-300 bg-amber-50 text-amber-800"
+                }`}
+              >
+                <strong>
+                  {calcResult.is_consistent ? "Konsisten" : "Tidak konsisten"} · CR{" "}
+                  {calcResult.cr.toFixed(3).replace(".", ",")}
+                </strong>
+                <p className="mt-1 text-[11px]">
+                  λmax {calcResult.lambda_max.toFixed(3)} · CI{" "}
+                  {calcResult.ci.toFixed(3)} · RI {calcResult.ri}
+                </p>
               </div>
-            </div>
+
+              <button
+                type="button"
+                onClick={handleActivateWeight}
+                disabled={!calcResult.is_consistent || isActivating}
+                className="w-full rounded-xl bg-[#1a5b3e] py-2.5 text-xs font-semibold text-white hover:bg-[#154932] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {isActivating ? "Mengaktifkan..." : "Simpan dan aktifkan"}
+              </button>
+            </>
+          ) : (
+            <p className="rounded-xl bg-zinc-50 p-4 text-xs text-zinc-500">
+              {isCalculating ? "Menghitung bobot..." : "Hasil akan muncul setelah perhitungan."}
+            </p>
           )}
-        </div>
+        </section>
       </div>
-    </div>
+    </main>
   );
 }
