@@ -1,8 +1,7 @@
 export type UserRole =
   | "ADMIN"
-  | "OPERATOR"
   | "PENILAI"
-  | "PENANGGUNG_JAWAB_PJU";
+  | "PJU";
 
 export interface UserResponse {
   id: number;
@@ -39,9 +38,9 @@ export const SEEDER_ACCOUNTS = [
     username: "pju_lead",
     password: "pju123",
     email: "pju@jatinangor-dss.id",
-    full_name: "Agus Pratama, S.T. (PJ PJU Jatinangor)",
-    role: "PENANGGUNG_JAWAB_PJU" as UserRole,
-    label: "Penanggung jawab PJU",
+    full_name: "Agus Pratama, S.T. (PJU Jatinangor)",
+    role: "PJU" as UserRole,
+    label: "Penanggung Jawab Umum",
   },
   {
     username: "admin",
@@ -51,19 +50,10 @@ export const SEEDER_ACCOUNTS = [
     role: "ADMIN" as UserRole,
     label: "Admin sistem",
   },
-  {
-    username: "operator",
-    password: "operator123",
-    email: "operator@jatinangor-dss.id",
-    full_name: "Operator Lapangan Jatinangor",
-    role: "OPERATOR" as UserRole,
-    label: "Operator lapangan",
-  },
 ];
 
 export const ROLE_LABELS: Record<UserRole, string> = {
   PENILAI: "Penilai kriteria",
-  PENANGGUNG_JAWAB_PJU: "Penanggung jawab PJU",
+  PJU: "Penanggung Jawab Umum",
   ADMIN: "Admin sistem",
-  OPERATOR: "Operator lapangan",
 };
