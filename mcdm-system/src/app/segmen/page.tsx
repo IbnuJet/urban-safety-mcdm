@@ -9,8 +9,10 @@ import {
   CorridorType,
   VALID_CORRIDORS,
 } from "../../lib/api";
+import { getClientUser, isPrivilegedRole, UserResponse } from "../../lib/auth";
 
 export default function SegmenPage() {
+  const [currentUser, setCurrentUser] = useState<UserResponse | null>(null);
   const [segments, setSegments] = useState<SegmentResponse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
@@ -49,6 +51,7 @@ export default function SegmenPage() {
   }
 
   useEffect(() => {
+    setCurrentUser(getClientUser());
     loadData();
   }, [selectedCorridor]);
 
@@ -197,15 +200,17 @@ export default function SegmenPage() {
             Kelola identitas dan batas segmen gang pada peta.
           </p>
         </div>
-        <div className="flex items-center">
-          <button
-            onClick={handleOpenAdd}
-            className="px-4 py-2 rounded-xl bg-[#1a5b3e] hover:bg-[#154932] text-white text-xs font-medium transition flex items-center gap-1.5 shadow-xs cursor-pointer"
-          >
-            <span className="text-sm font-semibold">+</span>
-            <span>Tambah segmen</span>
-          </button>
-        </div>
+        {isPrivilegedRole(currentUser?.role) && (
+          <div className="flex items-center">
+            <button
+              onClick={handleOpenAdd}
+              className="px-4 py-2 rounded-xl bg-[#1a5b3e] hover:bg-[#154932] text-white text-xs font-medium transition flex items-center gap-1.5 shadow-xs cursor-pointer"
+            >
+              <span className="text-sm font-semibold">+</span>
+              <span>Tambah segmen</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Success Alert Banner */}

@@ -2,7 +2,8 @@ export type UserRole =
   | "ADMIN"
   | "OPERATOR"
   | "PENILAI"
-  | "PENANGGUNG_JAWAB_PJU";
+  | "PENANGGUNG_JAWAB_PJU"
+  | "PJU";
 
 export interface UserResponse {
   id: number;
@@ -64,6 +65,32 @@ export const SEEDER_ACCOUNTS = [
 export const ROLE_LABELS: Record<UserRole, string> = {
   PENILAI: "Penilai kriteria",
   PENANGGUNG_JAWAB_PJU: "Penanggung jawab PJU",
+  PJU: "Penanggung Jawab Umum",
   ADMIN: "Admin sistem",
   OPERATOR: "Operator lapangan",
 };
+
+/**
+ * Helper to get currently logged in user session from cookies on the client side.
+ */
+export function getClientUser(): UserResponse | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const match = document.cookie
+      .split("; ")
+      .find((row) => row.startsWith("auth_session="));
+    if (match) {
+      const session = JSON.parse(decodeURIComponent(match.split("=")[1]));
+      return session?.user || null;
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Check if the user role is authorized as ADMIN or PJU
+ */
+export function isPrivilegedRole(role?: UserRole | string): boolean {
+  if (!role) return false;
+  return role === "ADMIN" || role === "PENANGGUNG_JAWAB_PJU" || role === "PJU";
+}
