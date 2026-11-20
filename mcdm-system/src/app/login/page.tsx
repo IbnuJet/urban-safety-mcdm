@@ -132,18 +132,14 @@ export default function LoginPage() {
         <div className="mt-6">
           <p className="text-[12px] text-zinc-400 mb-2.5 font-normal">Coba prototipe sebagai</p>
           <div className="space-y-2">
-            <button type="button" disabled={loading} onClick={() => handlePrototypeLogin("PENILAI")}
-              className="w-full px-4 py-2.5 rounded-lg bg-[#F2F7F2] hover:bg-[#e2ece5] active:bg-[#d7e5db] text-[#185D47] text-[13px] font-medium flex items-center justify-between transition-colors cursor-pointer text-left group"
-            >
+            <button type="button" disabled={loading} onClick={() => handlePrototypeLogin("PENILAI")} className="w-full px-4 py-2.5 rounded-lg bg-[#F2F7F2] hover:bg-[#e2ece5] active:bg-[#d7e5db] text-[#185D47] text-[13px] font-medium flex items-center justify-between transition-colors cursor-pointer text-left group">
               <span>Penilai kriteria</span>
               <svg className="w-4 h-4 text-[#185D47] transition-transform group-hover:translate-x-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
               </svg>
             </button>
 
-            <button type="button" disabled={loading} onClick={() => handlePrototypeLogin("PENANGGUNG_JAWAB_PJU")}
-              className="w-full px-4 py-2.5 rounded-lg bg-[#F2F7F2] hover:bg-[#e2ece5] active:bg-[#d7e5db] text-[#185D47] text-[13px] font-medium flex items-center justify-between transition-colors cursor-pointer text-left group"
-            >
+            <button type="button" disabled={loading} onClick={() => handlePrototypeLogin("PJU")} className="w-full px-4 py-2.5 rounded-lg bg-[#F2F7F2] hover:bg-[#e2ece5] active:bg-[#d7e5db] text-[#185D47] text-[13px] font-medium flex items-center justify-between transition-colors cursor-pointer text-left group">
               <span>Penanggung jawab PJU</span>
               <svg className="w-4 h-4 text-[#185D47] transition-transform group-hover:translate-x-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
