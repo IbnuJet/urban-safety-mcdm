@@ -777,20 +777,141 @@ export async function getTOPSISCycleDetail(
 }
 
 // -------------------------------------------------------------
+// Priority Map Layer & Segments Data
+// -------------------------------------------------------------
+export interface MapSummaryMetrics {
+  total_segments: number;
+  total_broken_lights: number;
+  eligible_count: number;
+  ineligible_count: number;
+  capacity_quota: number | null;
+}
+
+export interface PriorityMapLayerResponse {
+  type: string;
+  cycle_id: number | null;
+  cycle_name: string | null;
+  summary: MapSummaryMetrics;
+  features: Array<{
+    type: string;
+    geometry: {
+      type: string;
+      coordinates: [number, number][];
+    };
+    properties: {
+      segment_id: number;
+      segment_code: string;
+      name: string;
+      corridor: CorridorType;
+      rank: number | null;
+      preference_score: number | null;
+      priority_category: "Tinggi" | "Sedang" | "Rendah" | "Perlu validasi";
+      total_lights: number | null;
+      broken_lights: number | null;
+      dawn_crime_count: number | null;
+      boarding_house_count: number | null;
+      inspection_date: string | null;
+      is_eligible: boolean;
+      ineligible_reason: string | null;
+      is_tie_broken: boolean;
+    };
+  }>;
+}
+
+export async function fetchPriorityMapLayer(params?: {
+  cycleId?: number;
+  corridor?: string;
+}): Promise<PriorityMapLayerResponse | null> {
+  try {
+    const url = new URL(`${BACKEND_API_URL}/map/priority-layer`);
+    if (params?.cycleId) {
+      url.searchParams.append("cycle_id", String(params.cycleId));
+    }
+    if (params?.corridor && params.corridor !== "Semua koridor") {
+      url.searchParams.append("corridor", params.corridor);
+    }
+
+    const res = await fetch(url.toString(), {
+      headers: getAuthHeaders({ "Content-Type": "application/json" }),
+    });
+
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch {}
+  return null;
+}
+
+// -------------------------------------------------------------
 // Compatibility Wrapper for PriorityMap & Main Page
 // -------------------------------------------------------------
 export async function getSegmentsData(
   corridor?: string,
   fallbackData: SegmentItem[] = []
-): Promise<SegmentItem[]> {
+): Promise<{ segments: SegmentItem[]; summary?: MapSummaryMetrics; cycleName?: string | null }> {
   try {
+    // 1. Coba ambil dari /map/priority-layer terlebih dahulu
+    const mapLayer = await fetchPriorityMapLayer({ corridor });
+    if (mapLayer && mapLayer.features && mapLayer.features.length > 0) {
+      const segments: SegmentItem[] = mapLayer.features.map((feat) => {
+        const props = feat.properties;
+        // GeoJSON standard: [lon, lat] -> Leaflet standard: [lat, lon]
+        const rawCoords = feat.geometry?.coordinates || [];
+        const latLngCoords: [number, number][] = rawCoords.map(
+          (c: [number, number]) => [c[1], c[0]]
+        );
+        const midIdx = Math.floor(latLngCoords.length / 2);
+        const markerPos = latLngCoords[midIdx] || [-6.9332, 107.7745];
+
+        const priority =
+          !props.is_eligible || props.priority_category === "Perlu validasi"
+            ? "Perlu validasi"
+            : (props.priority_category as "Tinggi" | "Sedang" | "Rendah") || "Rendah";
+
+        const color =
+          priority === "Tinggi"
+            ? "#1a5b3e"
+            : priority === "Sedang"
+            ? "#c97a26"
+            : priority === "Rendah"
+            ? "#4b5563"
+            : "#b91c1c";
+
+        return {
+          id: props.segment_id,
+          rank: props.rank || 0,
+          segmentCode: props.segment_code,
+          name: props.name,
+          corridor: props.corridor,
+          priority,
+          color,
+          badgeColor: color,
+          score: props.preference_score ?? 0,
+          brokenLights: props.broken_lights ?? 0,
+          totalLights: props.total_lights ?? 0,
+          crimeCount: props.dawn_crime_count ?? 0,
+          boardingCount: props.boarding_house_count ?? 0,
+          inspectionDate: props.inspection_date || "-",
+          coordinates: latLngCoords,
+          markerPos,
+        };
+      });
+
+      return {
+        segments,
+        summary: mapLayer.summary,
+        cycleName: mapLayer.cycle_name,
+      };
+    }
+
+    // 2. Fallback ke fetchSegments jika belum ada siklus kalkulasi
     const data = await fetchSegments({
       corridor: corridor && corridor !== "Semua koridor" ? corridor : undefined,
     });
     if (Array.isArray(data) && data.length > 0) {
-      return data.map((item: any, idx: number) => {
+      const segments: SegmentItem[] = data.map((item: any, idx: number) => {
         const coords = item.geojson_geometry?.coordinates || [];
-        const latLngCoords = coords.map((c: [number, number]) => [c[1], c[0]]);
+        const latLngCoords: [number, number][] = coords.map((c: [number, number]) => [c[1], c[0]]);
         const midIdx = Math.floor(latLngCoords.length / 2);
         const markerPos = latLngCoords[midIdx] || [-6.9332, 107.7745];
 
@@ -819,20 +940,23 @@ export async function getSegmentsData(
               ? "#4b5563"
               : "#b91c1c",
           score: item.preference_score || 0.85 - idx * 0.08,
-          brokenLights: item.observation?.broken_lights || 5,
-          totalLights: item.observation?.total_lights || 8,
-          crimeCount: item.observation?.dawn_crime_count || 3,
-          boardingCount: item.observation?.boarding_house_count || 15,
-          inspectionDate: item.observation?.inspection_date || "10 Nov 2026",
+          brokenLights: item.observation?.broken_lights ?? item.broken_lights ?? 0,
+          totalLights: item.observation?.total_lights ?? item.total_lights ?? 0,
+          crimeCount: item.observation?.dawn_crime_count ?? item.dawn_crime_count ?? 0,
+          boardingCount: item.observation?.boarding_house_count ?? item.boarding_house_count ?? 0,
+          inspectionDate: item.observation?.inspection_date || item.last_inspection_date || "-",
           coordinates: latLngCoords,
           markerPos,
         };
       });
+
+      return { segments };
     }
   } catch {}
 
-  if (corridor && corridor !== "Semua koridor") {
-    return fallbackData.filter((s) => s.corridor === corridor);
-  }
-  return fallbackData;
+  const filteredFallback =
+    corridor && corridor !== "Semua koridor"
+      ? fallbackData.filter((s) => s.corridor === corridor)
+      : fallbackData;
+  return { segments: filteredFallback };
 }
