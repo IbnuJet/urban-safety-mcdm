@@ -42,10 +42,9 @@ def setup_and_verify(skip_seed: bool = False) -> int:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
     except SQLAlchemyError as exc:
-        print(f"[DB Setup] GAGAL terhubung ke database: {exc}", file=sys.stderr)
+        print(f"[DB Setup] GAGAL terhubung ke database Supabase: {exc}", file=sys.stderr)
         print(
-            "[DB Setup] Pastikan service PostgreSQL berjalan, database sudah dibuat "
-            "(mis. CREATE DATABASE dss_jatinangor;), dan kredensial di backend/.env benar.",
+            "[DB Setup] Pastikan DATABASE_URL di backend/.env mengarah ke Supabase PostgreSQL yang valid.",
             file=sys.stderr,
         )
         return 1

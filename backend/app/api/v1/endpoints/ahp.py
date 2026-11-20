@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_roles
+from app.api.deps import get_optional_user, require_roles
 from app.core.database import get_db
 from app.models.models import AHPWeightVersion, User, UserRole
 from app.schemas.schemas import (
@@ -93,7 +93,7 @@ def create_ahp_version(
 @router.get("/versions", response_model=list[AHPVersionResponse])
 def list_ahp_versions(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User | None = Depends(get_optional_user),
 ) -> list[AHPVersionResponse]:
     """List all saved AHP weight versions ordered from newest to oldest."""
     versions = db.scalars(

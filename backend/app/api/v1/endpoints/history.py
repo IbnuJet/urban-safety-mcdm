@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import get_current_user
+from app.api.deps import get_optional_user
 from app.api.v1.endpoints.topsis import _build_cycle_response
 from app.api.v1.endpoints.worklists import build_worklist_detail
 from app.core.database import get_db
@@ -24,7 +24,7 @@ router = APIRouter(prefix="/history", tags=["History & Export"])
 @router.get("/cycles", response_model=list[CycleHistorySummaryResponse])
 def list_cycle_history(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User | None = Depends(get_optional_user),
 ) -> list[CycleHistorySummaryResponse]:
     """List historical TOPSIS evaluation cycles with worklist and override summary."""
     cycles = db.scalars(
@@ -69,7 +69,7 @@ def list_cycle_history(
 def get_cycle_history_detail(
     cycle_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User | None = Depends(get_optional_user),
 ) -> CycleHistoryDetailResponse:
     """Retrieve full audit detail for one evaluation cycle including rankings and worklist."""
     cycle = db.scalar(
@@ -122,7 +122,7 @@ def get_cycle_history_detail(
 def export_cycle_worklist_csv(
     cycle_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User | None = Depends(get_optional_user),
 ) -> StreamingResponse:
     """Export the finalized repair worklist of an evaluation cycle to CSV."""
     cycle = db.scalar(

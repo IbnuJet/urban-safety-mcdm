@@ -51,14 +51,10 @@ def calculate_ahp(pairwise_matrix: list[list[float]]) -> AHPResult:
                     "harus saling berkebalikan (a_ji = 1 / a_ij)."
                 )
 
-    # 1. Column sums & normalization
     col_sums = np.sum(matrix, axis=0)
     normalized_matrix = matrix / col_sums
-
-    # 2. Priority weights (row mean of normalized matrix)
     weights = np.mean(normalized_matrix, axis=1)
 
-    # 3. Consistency check
     weighted_sum = matrix @ weights
     lambda_max = float(np.mean(weighted_sum / weights))
     ci = float((lambda_max - 3.0) / (3.0 - 1.0))

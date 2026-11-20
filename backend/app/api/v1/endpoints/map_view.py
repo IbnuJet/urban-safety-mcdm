@@ -1,12 +1,16 @@
-"""Modul 6: Priority map GeoJSON layer and segment calculation detail endpoints."""
+"""Modul 6: Priority map GeoJSON layer and segment calculation detail endpoints (Supabase)."""
+
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import get_current_user
+from app.api.deps import get_optional_user
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.models import (
+    AHPWeightVersion,
     AlleySegment,
     CorridorEnum,
     CycleRankingResult,
@@ -19,7 +23,13 @@ from app.schemas.schemas import (
     MapSegmentDetailResponse,
     MapSummaryMetrics,
 )
-from app.services.topsis_engine import get_priority_category
+from app.services.topsis_engine import (
+    TOPSISInputItem,
+    TOPSISRankedItem,
+    calculate_topsis,
+    evaluate_segment_eligibility,
+    get_priority_category,
+)
 
 router = APIRouter(prefix="/map", tags=["Priority Map"])
 
@@ -56,30 +66,166 @@ def _resolve_cycle(db: Session, cycle_id: int | None) -> EvaluationCycle | None:
     )
 
 
+def _compute_live_ranking_from_supabase(
+    db: Session,
+) -> tuple[
+    list[AlleySegment],
+    dict[int, TOPSISRankedItem],
+    dict[int, tuple[bool, str | None]],
+    dict[str, float],
+]:
+    """Compute live TOPSIS ranking directly from Supabase alley_segments & segment_observations."""
+    segments = list(
+        db.scalars(
+            select(AlleySegment)
+            .options(selectinload(AlleySegment.observation))
+            .order_by(AlleySegment.segment_code.asc())
+        ).all()
+    )
+    active_ahp = db.scalar(
+        select(AHPWeightVersion).where(
+            AHPWeightVersion.is_active.is_(True),
+            AHPWeightVersion.is_consistent.is_(True),
+        )
+    )
+    if active_ahp is not None:
+        weights = (
+            active_ahp.w_light_damage,
+            active_ahp.w_dawn_crime,
+            active_ahp.w_boarding_density,
+        )
+    else:
+        weights = (0.2970, 0.5396, 0.1634)
+
+    weights_dict = {
+        "w_light_damage": float(weights[0]),
+        "w_dawn_crime": float(weights[1]),
+        "w_boarding_density": float(weights[2]),
+    }
+
+    today = date.today()
+    eligible_inputs: list[TOPSISInputItem] = []
+    eligibility_map: dict[int, tuple[bool, str | None]] = {}
+
+    for seg in segments:
+        obs = seg.observation
+        is_eligible, reason = evaluate_segment_eligibility(
+            segment=seg,
+            observation=obs,
+            reference_date=today,
+            expiry_days=settings.INSPECTION_EXPIRY_DAYS,
+        )
+        eligibility_map[seg.id] = (is_eligible, reason)
+        if is_eligible and obs is not None and obs.dawn_crime_count is not None:
+            eligible_inputs.append(
+                TOPSISInputItem(
+                    segment_id=seg.id,
+                    segment_code=seg.segment_code,
+                    broken_lights=obs.broken_lights,
+                    dawn_crime_count=obs.dawn_crime_count,
+                    boarding_house_count=obs.boarding_house_count,
+                )
+            )
+
+    ranked_items = (
+        calculate_topsis(items=eligible_inputs, weights=weights)
+        if eligible_inputs
+        else []
+    )
+    ranked_map = {item.segment_id: item for item in ranked_items}
+    return segments, ranked_map, eligibility_map, weights_dict
+
+
 @router.get("/priority-layer", response_model=GeoJSONFeatureCollection)
 def get_priority_map_layer(
     cycle_id: int | None = Query(default=None),
     corridor: CorridorEnum | None = Query(default=None),
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User | None = Depends(get_optional_user),
 ) -> GeoJSONFeatureCollection:
-    """Return a GeoJSON FeatureCollection of ranked alley segments for map rendering."""
+    """Return a GeoJSON FeatureCollection of ranked alley segments directly from Supabase."""
     cycle = _resolve_cycle(db, cycle_id)
-    if cycle is None:
+
+    # Always use live computation from Supabase when no specific cycle_id is requested
+    # or when no evaluation cycle exists yet, so changes in Supabase Table Editor reflect immediately.
+    if cycle_id is None:
+        segments, ranked_map, eligibility_map, _ = _compute_live_ranking_from_supabase(db)
+        if corridor is not None:
+            segments = [s for s in segments if s.corridor == corridor]
+
+        def _sort_key(seg: AlleySegment):
+            is_el, _ = eligibility_map.get(seg.id, (False, None))
+            r_item = ranked_map.get(seg.id)
+            return (
+                0 if is_el else 1,
+                r_item.rank if r_item is not None else 10**9,
+                seg.segment_code,
+            )
+
+        segments.sort(key=_sort_key)
+
+        features: list[GeoJSONFeature] = []
+        total_broken_lights = 0
+        eligible_count = 0
+
+        for seg in segments:
+            obs = seg.observation
+            is_el, reason = eligibility_map.get(seg.id, (False, None))
+            r_item = ranked_map.get(seg.id)
+            if is_el:
+                eligible_count += 1
+            if obs is not None and obs.broken_lights:
+                total_broken_lights += int(obs.broken_lights)
+
+            pref_score = r_item.preference_score if r_item is not None else None
+            features.append(
+                GeoJSONFeature(
+                    type="Feature",
+                    geometry=seg.geojson_geometry,
+                    properties={
+                        "segment_id": seg.id,
+                        "segment_code": seg.segment_code,
+                        "name": seg.name,
+                        "corridor": seg.corridor.value,
+                        "rank": r_item.rank if r_item is not None else None,
+                        "preference_score": pref_score,
+                        "priority_category": get_priority_category(is_el, pref_score),
+                        "total_lights": obs.total_lights if obs else 0,
+                        "broken_lights": obs.broken_lights if obs else 0,
+                        "dawn_crime_count": obs.dawn_crime_count if obs else 0,
+                        "boarding_house_count": obs.boarding_house_count if obs else 0,
+                        "inspection_date": (
+                            obs.inspection_date.isoformat() if obs else None
+                        ),
+                        "is_eligible": is_el,
+                        "ineligible_reason": reason,
+                        "is_tie_broken": (
+                            r_item.is_tie_broken if r_item is not None else False
+                        ),
+                    },
+                )
+            )
+
+        capacity_quota = (
+            cycle.worklist_decision.capacity_quota
+            if cycle and cycle.worklist_decision
+            else None
+        )
         return GeoJSONFeatureCollection(
             type="FeatureCollection",
-            cycle_id=None,
-            cycle_name=None,
+            cycle_id=cycle.id if cycle else None,
+            cycle_name=cycle.cycle_name if cycle else "Data Langsung Supabase",
             summary=MapSummaryMetrics(
-                total_segments=0,
-                total_broken_lights=0,
-                eligible_count=0,
-                ineligible_count=0,
-                capacity_quota=None,
+                total_segments=len(segments),
+                total_broken_lights=total_broken_lights,
+                eligible_count=eligible_count,
+                ineligible_count=len(segments) - eligible_count,
+                capacity_quota=capacity_quota,
             ),
-            features=[],
+            features=features,
         )
 
+    assert cycle is not None
     results = cycle.ranking_results
     if corridor is not None:
         results = [r for r in results if r.segment.corridor == corridor]
@@ -93,7 +239,7 @@ def get_priority_map_layer(
         ),
     )
 
-    features: list[GeoJSONFeature] = []
+    features = []
     for r in results:
         snap = r.snapshot_data or {}
         features.append(
@@ -151,7 +297,7 @@ def get_map_segment_detail(
     segment_id: int,
     cycle_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User | None = Depends(get_optional_user),
 ) -> MapSegmentDetailResponse:
     """Return full segment attributes, TOPSIS computation breakdown, and data provenance."""
     segment = db.scalar(
@@ -221,7 +367,13 @@ def get_map_segment_detail(
             data_source=snap.get("data_source"),
         )
 
+    # Live calculation fallback directly from Supabase tables
+    _, ranked_map, eligibility_map, weights_dict = _compute_live_ranking_from_supabase(db)
+    is_el, reason = eligibility_map.get(segment.id, (False, None))
+    r_item = ranked_map.get(segment.id)
     obs = segment.observation
+    pref_score = r_item.preference_score if r_item is not None else None
+
     return MapSegmentDetailResponse(
         segment_id=segment.id,
         segment_code=segment.segment_code,
@@ -230,8 +382,8 @@ def get_map_segment_detail(
         is_active=segment.is_active,
         geojson_geometry=segment.geojson_geometry,
         cycle_id=cycle.id if cycle else None,
-        cycle_name=cycle.cycle_name if cycle else None,
-        ahp_weights=cycle.weights_snapshot if cycle else None,
+        cycle_name=cycle.cycle_name if cycle else "Data Langsung Supabase",
+        ahp_weights=weights_dict,
         indicators=(
             {
                 "total_lights": obs.total_lights,
@@ -242,11 +394,32 @@ def get_map_segment_detail(
             if obs
             else None
         ),
-        priority_category="Tidak Layak",
-        is_eligible=False if obs is None else None,
-        ineligible_reason=(
-            "Belum ada siklus perhitungan TOPSIS." if cycle is None else "Segmen belum masuk dalam siklus."
+        normalized_values=(
+            {
+                "norm_c1": r_item.norm_c1,
+                "norm_c2": r_item.norm_c2,
+                "norm_c3": r_item.norm_c3,
+            }
+            if r_item
+            else None
         ),
+        weighted_values=(
+            {
+                "weighted_c1": r_item.weighted_c1,
+                "weighted_c2": r_item.weighted_c2,
+                "weighted_c3": r_item.weighted_c3,
+            }
+            if r_item
+            else None
+        ),
+        d_plus=r_item.d_plus if r_item else None,
+        d_minus=r_item.d_minus if r_item else None,
+        preference_score=pref_score,
+        rank=r_item.rank if r_item else None,
+        priority_category=get_priority_category(is_el, pref_score),
+        is_eligible=is_el,
+        ineligible_reason=reason,
+        is_tie_broken=r_item.is_tie_broken if r_item else False,
         inspection_date=obs.inspection_date.isoformat() if obs else None,
         data_source=obs.data_source.value if obs else None,
     )

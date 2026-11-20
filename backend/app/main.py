@@ -8,12 +8,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.database import init_db
+from app.seed import seed_database
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Ensure database tables exist on application startup."""
+    """Ensure Supabase database tables and initial data exist on application startup."""
     init_db()
+    seed_database()
     yield
 
 

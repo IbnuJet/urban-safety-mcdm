@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import get_current_user, require_roles
+from app.api.deps import get_optional_user, require_roles
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.models import (
@@ -319,7 +319,7 @@ def confirm_csv_batch(
 @router.get("/validation-summary", response_model=ObservationValidationSummaryResponse)
 def get_observation_validation_summary(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User | None = Depends(get_optional_user),
 ) -> ObservationValidationSummaryResponse:
     """Return data completeness & freshness summary across all active alley segments."""
     segments = db.scalars(
@@ -393,7 +393,7 @@ def get_observation_validation_summary(
 
 @router.get("/csv-template")
 def download_csv_template(
-    _: User = Depends(get_current_user),
+    _: User | None = Depends(get_optional_user),
 ) -> StreamingResponse:
     """Download a CSV template with required observation import columns."""
     buffer = io.StringIO()

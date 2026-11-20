@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import get_current_user, require_roles
+from app.api.deps import get_optional_user, require_roles
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.models import (
@@ -257,7 +257,7 @@ def run_topsis_cycle(
 @router.get("/cycles/latest", response_model=TOPSISCycleDetailResponse)
 def get_latest_topsis_cycle(
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User | None = Depends(get_optional_user),
 ) -> TOPSISCycleDetailResponse:
     """Retrieve the latest TOPSIS evaluation cycle ranking results."""
     cycle = db.scalar(
@@ -282,7 +282,7 @@ def get_latest_topsis_cycle(
 def get_topsis_cycle_detail(
     cycle_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User | None = Depends(get_optional_user),
 ) -> TOPSISCycleDetailResponse:
     """Retrieve ranked eligible segments and ineligible segments for a cycle."""
     cycle = db.scalar(

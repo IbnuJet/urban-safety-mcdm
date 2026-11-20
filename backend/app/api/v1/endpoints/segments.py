@@ -4,10 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import get_current_user, require_roles
+from app.api.deps import get_optional_user, require_roles
 from app.core.database import get_db
 from app.models.models import AlleySegment, CorridorEnum, User, UserRole
 from app.schemas.schemas import (
+    ObservationBriefResponse,
     SegmentCreateRequest,
     SegmentDetailResponse,
     SegmentResponse,
@@ -18,6 +19,11 @@ router = APIRouter(prefix="/segments", tags=["Alley Segments"])
 
 
 def _to_segment_response(seg: AlleySegment) -> SegmentResponse:
+    obs_brief = (
+        ObservationBriefResponse.model_validate(seg.observation)
+        if seg.observation is not None
+        else None
+    )
     return SegmentResponse(
         id=seg.id,
         segment_code=seg.segment_code,
@@ -33,6 +39,7 @@ def _to_segment_response(seg: AlleySegment) -> SegmentResponse:
         last_inspection_date=(
             seg.observation.inspection_date if seg.observation is not None else None
         ),
+        observation=obs_brief,
     )
 
 
@@ -42,9 +49,9 @@ def list_segments(
     is_active: bool | None = Query(default=None),
     q: str | None = Query(default=None, description="Kata kunci kode atau nama gang"),
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User | None = Depends(get_optional_user),
 ) -> list[SegmentResponse]:
-    """List alley segments with optional corridor, status, and keyword filters."""
+    """List alley segments directly from Supabase with optional filters."""
     stmt = select(AlleySegment).options(selectinload(AlleySegment.observation))
     if corridor is not None:
         stmt = stmt.where(AlleySegment.corridor == corridor)
@@ -67,7 +74,7 @@ def list_segments(
 def get_segment_detail(
     segment_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User | None = Depends(get_optional_user),
 ) -> SegmentDetailResponse:
     """Return detail of a single alley segment along with its latest observation."""
     stmt = (
@@ -82,10 +89,7 @@ def get_segment_detail(
             detail=f"Segmen gang dengan ID {segment_id} tidak ditemukan.",
         )
     base = _to_segment_response(segment)
-    return SegmentDetailResponse(
-        **base.model_dump(),
-        observation=segment.observation,
-    )
+    return SegmentDetailResponse(**base.model_dump())
 
 
 @router.post("", response_model=SegmentResponse, status_code=status.HTTP_201_CREATED)

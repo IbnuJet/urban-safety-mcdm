@@ -50,11 +50,6 @@ class GeoJSONGeometry(BaseModel):
         return self
 
 
-# ---------------------------------------------------------------------------
-# Modul 1: Auth & Users
-# ---------------------------------------------------------------------------
-
-
 class LoginRequest(BaseModel):
     username: str | None = Field(default=None, min_length=1, max_length=255)
     email: EmailStr | None = None
@@ -99,11 +94,6 @@ class UserUpdateRequest(BaseModel):
     role: UserRole | None = None
     is_active: bool | None = None
     password: str | None = Field(default=None, min_length=6, max_length=128)
-
-
-# ---------------------------------------------------------------------------
-# Modul 2: Alley Segments
-# ---------------------------------------------------------------------------
 
 
 class ObservationBriefResponse(BaseModel):
@@ -153,10 +143,11 @@ class SegmentResponse(BaseModel):
     updated_at: datetime
     has_geometry: bool = True
     last_inspection_date: date | None = None
+    observation: ObservationBriefResponse | None = None
 
 
 class SegmentDetailResponse(SegmentResponse):
-    observation: ObservationBriefResponse | None = None
+    pass
 
 
 class ObservationValidationAlertItem(BaseModel):
@@ -175,11 +166,6 @@ class ObservationValidationSummaryResponse(BaseModel):
     expired_segments: list[ObservationValidationAlertItem]
     incomplete_segments: list[ObservationValidationAlertItem]
     missing_observation_segments: list[ObservationValidationAlertItem]
-
-
-# ---------------------------------------------------------------------------
-# Modul 3: Observations & CSV Staging
-# ---------------------------------------------------------------------------
 
 
 class ObservationFormRequest(BaseModel):
@@ -265,11 +251,6 @@ class CSVConfirmResponse(BaseModel):
     committed_count: int
     skipped_error_count: int
     committed_segment_codes: list[str]
-
-
-# ---------------------------------------------------------------------------
-# Modul 4: AHP Weighting
-# ---------------------------------------------------------------------------
 
 
 class AHPSaatyComparisons(BaseModel):
@@ -359,11 +340,6 @@ class AHPVersionResponse(BaseModel):
     created_at: datetime
 
 
-# ---------------------------------------------------------------------------
-# Modul 5: TOPSIS Ranking
-# ---------------------------------------------------------------------------
-
-
 class TOPSISCycleCreateRequest(BaseModel):
     cycle_name: str = Field(..., min_length=2, max_length=200)
     criteria_directions: tuple[
@@ -408,11 +384,6 @@ class TOPSISCycleDetailResponse(BaseModel):
     ineligible_count: int
     eligible_results: list[CycleRankingItemResponse]
     ineligible_results: list[CycleRankingItemResponse]
-
-
-# ---------------------------------------------------------------------------
-# Modul 6: Priority Map
-# ---------------------------------------------------------------------------
 
 
 class MapSummaryMetrics(BaseModel):
@@ -460,11 +431,6 @@ class MapSegmentDetailResponse(BaseModel):
     is_tie_broken: bool = False
     inspection_date: date | str | None = None
     data_source: str | None = None
-
-
-# ---------------------------------------------------------------------------
-# Modul 7: Worklists & Override Audit
-# ---------------------------------------------------------------------------
 
 
 class WorklistProposeRequest(BaseModel):
@@ -526,11 +492,6 @@ class WorklistDecisionResponse(BaseModel):
     is_overridden: bool
     override_reason: str | None
     finalized_at: datetime
-
-
-# ---------------------------------------------------------------------------
-# Modul 8: History
-# ---------------------------------------------------------------------------
 
 
 class CycleHistorySummaryResponse(BaseModel):

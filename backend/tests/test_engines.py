@@ -22,11 +22,6 @@ from app.services.topsis_engine import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Fixtures for isolated in-memory SQLite API tests
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture()
 def client():
     engine = create_engine(
@@ -61,11 +56,6 @@ def _login(client: TestClient, username: str, password: str) -> dict[str, str]:
     assert resp.status_code == 200, resp.text
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
-
-
-# ---------------------------------------------------------------------------
-# 1. AHP Engine Tests
-# ---------------------------------------------------------------------------
 
 
 def test_ahp_consistent_matrix_accuracy():
@@ -130,11 +120,6 @@ def test_ahp_reject_activation_when_cr_above_threshold(client: TestClient):
         headers=headers,
     )
     assert activate_resp.status_code == 400
-
-
-# ---------------------------------------------------------------------------
-# 2. TOPSIS Engine & Tie-Breaker Tests
-# ---------------------------------------------------------------------------
 
 
 def test_topsis_ranking_accuracy_and_edge_cases():
@@ -245,11 +230,6 @@ def test_eligibility_rules():
     assert eligible_exp is False
 
 
-# ---------------------------------------------------------------------------
-# 3. CSV Validator Tests
-# ---------------------------------------------------------------------------
-
-
 def test_csv_validator_sample_file():
     sample_path = Path(__file__).resolve().parents[1] / "sample_data" / "sample_jatinangor_import.csv"
     csv_bytes = sample_path.read_bytes()
@@ -287,18 +267,12 @@ def test_csv_validator_sample_file():
     }.issubset(issue_codes)
 
 
-# ---------------------------------------------------------------------------
-# 4. End-to-End API, RBAC, Map, Worklist Override & CSV Export Tests
-# ---------------------------------------------------------------------------
-
-
 def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     client: TestClient,
 ):
     pju_headers = _login(client, "pju_lead", "pju123")
     operator_headers = _login(client, "operator", "operator123")
 
-    # RBAC check: OPERATOR cannot execute TOPSIS cycle
     forbidden_resp = client.post(
         "/api/v1/topsis/cycles",
         headers=operator_headers,
@@ -306,7 +280,6 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     )
     assert forbidden_resp.status_code == 403
 
-    # Run TOPSIS cycle as PENANGGUNG_JAWAB_PJU
     cycle_resp = client.post(
         "/api/v1/topsis/cycles",
         headers=pju_headers,
@@ -318,7 +291,6 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     assert cycle_data["eligible_count"] == 11
     assert cycle_data["ineligible_count"] == 1  # GG-HGM-002 has 0 broken lights
 
-    # Propose Top-3 worklist
     propose_resp = client.post(
         f"/api/v1/worklists/cycles/{cycle_id}/propose",
         headers=pju_headers,
@@ -330,7 +302,6 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     reserve_id = propose_data["reserve_candidates"][0]["segment_id"]
     override_ids = [proposed_ids[0], proposed_ids[1], reserve_id]
 
-    # Attempt finalize with override but NO reason -> must be 422
     bad_finalize = client.post(
         f"/api/v1/worklists/cycles/{cycle_id}/finalize",
         headers=pju_headers,
@@ -343,7 +314,6 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     assert bad_finalize.status_code == 422
     assert "Alasan perubahan wajib diisi" in bad_finalize.json()["detail"]
 
-    # Attempt finalize with short reason (< 10 chars) -> must be 422
     short_finalize = client.post(
         f"/api/v1/worklists/cycles/{cycle_id}/finalize",
         headers=pju_headers,
@@ -355,7 +325,6 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     )
     assert short_finalize.status_code == 422
 
-    # Valid override reason -> succeeds (201)
     good_finalize = client.post(
         f"/api/v1/worklists/cycles/{cycle_id}/finalize",
         headers=pju_headers,
@@ -369,7 +338,6 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     decision = good_finalize.json()
     assert decision["is_overridden"] is True
 
-    # Map priority layer returns GeoJSON FeatureCollection
     map_resp = client.get(
         f"/api/v1/map/priority-layer?cycle_id={cycle_id}",
         headers=pju_headers,
@@ -379,7 +347,6 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     assert geojson["type"] == "FeatureCollection"
     assert len(geojson["features"]) == 12
 
-    # Export CSV works and reflects USULAN_SISTEM & PILIHAN_OVERRIDE
     csv_resp = client.get(
         f"/api/v1/history/cycles/{cycle_id}/export-csv",
         headers=pju_headers,
@@ -391,7 +358,6 @@ def test_worklist_override_rejected_without_reason_and_accepted_with_reason(
     assert "USULAN_SISTEM" in csv_text
     assert "PILIHAN_OVERRIDE" in csv_text
 
-    # Map segment detail & history list
     detail_resp = client.get(
         f"/api/v1/map/segments/{proposed_ids[0]}/detail?cycle_id={cycle_id}",
         headers=pju_headers,
@@ -408,13 +374,11 @@ def test_csv_upload_confirm_and_admin_rbac(client: TestClient):
     admin_headers = _login(client, "admin", "admin123")
     operator_headers = _login(client, "operator", "operator123")
 
-    # Non-admin cannot list users
     assert client.get("/api/v1/users", headers=operator_headers).status_code == 403
     users_resp = client.get("/api/v1/users", headers=admin_headers)
     assert users_resp.status_code == 200
     assert len(users_resp.json()) == 4
 
-    # Upload sample CSV as operator
     sample_path = (
         Path(__file__).resolve().parents[1]
         / "sample_data"
@@ -433,7 +397,6 @@ def test_csv_upload_confirm_and_admin_rbac(client: TestClient):
     assert preview["warning_rows"] == 2
     assert preview["error_rows"] == 4
 
-    # Confirm valid & warning rows (skipping 4 error rows)
     confirm_resp = client.post(
         f"/api/v1/observations/batches/{preview['batch_id']}/confirm",
         headers=operator_headers,
@@ -446,7 +409,6 @@ def test_csv_upload_confirm_and_admin_rbac(client: TestClient):
 
 
 def test_figma_aligned_endpoints_and_workflows(client: TestClient):
-    # 1. Email login (Screen 00) & Password reset (Screen 08b)
     email_login = client.post(
         "/api/v1/auth/login",
         json={"email": "admin@jatinangor-dss.id", "password": "admin123"},
@@ -464,7 +426,6 @@ def test_figma_aligned_endpoints_and_workflows(client: TestClient):
     assert reset_resp.status_code == 200, reset_resp.text
     op_headers = _login(client, "operator@jatinangor-dss.id", "operator_new123")
 
-    # 2. Segments list includes has_geometry and last_inspection_date (Screen 02)
     seg_resp = client.get("/api/v1/segments", headers=op_headers)
     assert seg_resp.status_code == 200
     segments = seg_resp.json()
@@ -472,7 +433,6 @@ def test_figma_aligned_endpoints_and_workflows(client: TestClient):
     assert all(s["has_geometry"] is True for s in segments)
     assert all(s["last_inspection_date"] is not None for s in segments)
 
-    # 3. Observations validation-summary, csv-template, GET batch & DELETE batch (Screens 03/03b/03c)
     val_resp = client.get("/api/v1/observations/validation-summary", headers=op_headers)
     assert val_resp.status_code == 200
     val_data = val_resp.json()
@@ -519,7 +479,6 @@ def test_figma_aligned_endpoints_and_workflows(client: TestClient):
         == 400
     )
 
-    # 4. AHP calculate-preview via saaty_comparisons (Screen 04)
     penilai_headers = _login(client, "penilai", "penilai123")
     ahp_preview = client.post(
         "/api/v1/ahp/calculate-preview",
@@ -529,7 +488,6 @@ def test_figma_aligned_endpoints_and_workflows(client: TestClient):
     assert ahp_preview.status_code == 200, ahp_preview.text
     assert ahp_preview.json()["is_consistent"] is True
 
-    # 5. TOPSIS latest, Map summary, Worklist detail, and History detail (Screens 01, 05, 07b, 07c)
     pju_headers = _login(client, "pju_lead", "pju123")
     c_resp = client.post(
         "/api/v1/topsis/cycles",

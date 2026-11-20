@@ -23,7 +23,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 
-# Portable JSON column: uses native JSONB on PostgreSQL and JSON on SQLite
+# Native PostgreSQL JSONB column for Supabase (with JSON variant for unit test fixtures)
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 

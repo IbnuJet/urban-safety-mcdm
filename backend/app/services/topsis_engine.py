@@ -114,7 +114,7 @@ def calculate_topsis(
         dtype=np.float64,
     )
 
-    # 1. Euclidean vector normalization (safe against zero-norm columns)
+    # Guard against zero-norm columns when all segments have 0 for a criterion
     col_norms = np.sqrt(np.sum(X**2, axis=0))
     R = np.zeros_like(X, dtype=np.float64)
     for j in range(3):
@@ -123,10 +123,8 @@ def calculate_topsis(
         else:
             R[:, j] = 0.0
 
-    # 2. Weighted normalized matrix
     V = R * w
 
-    # Edge case: single eligible segment
     if m == 1:
         item = items[0]
         return [
@@ -150,7 +148,6 @@ def calculate_topsis(
             )
         ]
 
-    # 3. Ideal positive (A+) and negative (A-) solutions
     a_plus = np.zeros(3, dtype=np.float64)
     a_minus = np.zeros(3, dtype=np.float64)
     for j in range(3):
@@ -161,11 +158,9 @@ def calculate_topsis(
             a_plus[j] = float(np.min(V[:, j]))
             a_minus[j] = float(np.max(V[:, j]))
 
-    # 4. Euclidean distances D+ and D-
     d_plus = np.sqrt(np.sum((V - a_plus) ** 2, axis=1))
     d_minus = np.sqrt(np.sum((V - a_minus) ** 2, axis=1))
 
-    # 5. Preference score C_i = D- / (D+ + D-), 0.0 when denominator is 0
     denom = d_plus + d_minus
     scores = np.where(denom > 0.0, d_minus / denom, 0.0)
 
@@ -187,7 +182,7 @@ def calculate_topsis(
             }
         )
 
-    # 6. Deterministic tie-breaker sorting
+    # Tie-breaker order: preference_score -> dawn_crime_count -> broken_lights -> boarding_house_count -> segment_code
     preliminary.sort(
         key=lambda row: (
             -round(row["score"], 6),
@@ -221,5 +216,4 @@ def calculate_topsis(
                 is_tie_broken=row["is_tie_broken"],
             )
         )
-
     return ranked_results
